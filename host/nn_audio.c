@@ -254,7 +254,9 @@ static int next_source_frame(Voice *v) {
             v->started_wb = 1;
             if (v->format == FMT_ADPCM) {
                 adpcm_seek(v, &w);
-                for (int64_t s = (w.start / 14) * 14; s < w.start; s++) adpcm_sample(v, &w, s);   /* (mid-frame start) */
+                /* A context holds the two samples before w.start: the frame prefix is decoded only without one. */
+                if (!w.context)   /* (mid-frame start) */
+                    for (int64_t s = (w.start / 14) * 14; s < w.start; s++) adpcm_sample(v, &w, s);
             }
         }
         if (v->pos < w.end) {
