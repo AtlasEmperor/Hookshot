@@ -63,32 +63,39 @@ void reset() {
     cpu_words_recent.clear();
     cpu_words_new.clear();
 }
+// runs: the write-back's runs, in order
 // owned: words noted since the last merge; kept: words merged before (in the big set already)
-void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned, std::initializer_list<uint64_t> kept = {}) {
+void check_runs(std::vector<VkBufferCopy> runs, std::initializer_list<uint64_t> owned, std::initializer_list<uint64_t> kept = {}) {
     const Pool pool{0x1000};
     cpu_words.clear();
     cpu_words_recent.clear();
     cpu_words_new.clear();
-    std::set<uint64_t> owned_words;
+    std::set<uint64_t> owned_words, requested;
     for (uint64_t offset : kept) cpu_words.push_back(pool.lo + offset), owned_words.insert(pool.lo + offset);
     std::sort(cpu_words.begin(), cpu_words.end());
     for (uint64_t offset : owned) cpu_words_new.push_back(pool.lo + offset), owned_words.insert(pool.lo + offset);
-    std::vector<VkBufferCopy> runs{{start, start, end - start}};
+    for (const auto& run : runs)
+        for (uint64_t byte = run.srcOffset; byte < run.srcOffset + run.size; ++byte)
+            requested.insert(byte);
     cut_cpu_words(pool, runs);
     CHECK(sets_hold(owned_words));
     std::set<uint64_t> copied;
-    uint64_t previous_end = start;
+    uint64_t previous_end = 0;
     for (const auto& run : runs) {
         CHECK(run.srcOffset == run.dstOffset && run.size);
-        CHECK(run.srcOffset >= previous_end && run.srcOffset + run.size <= end);
+        CHECK(run.srcOffset >= previous_end);
         for (uint64_t byte = run.srcOffset; byte < run.srcOffset + run.size; ++byte)
-            CHECK(copied.insert(byte).second);
+            CHECK(requested.count(byte) && copied.insert(byte).second);
         previous_end = run.srcOffset + run.size;
     }
     for (uint64_t byte = 0; byte < 96; ++byte) {
-        const bool expected = byte >= start && byte < end && !owned_words.count((pool.lo + byte) & ~7ull);
+        const bool expected = requested.count(byte) && !owned_words.count((pool.lo + byte) & ~7ull);
         CHECK(copied.count(byte) == expected);
     }
+}
+// one run from start to end
+void check(uint64_t start, uint64_t end, std::initializer_list<uint64_t> owned, std::initializer_list<uint64_t> kept = {}) {
+    check_runs({{start, start, end - start}}, owned, kept);
 }
 // the recent set goes into the big one once it is past max(4096, an eighth of the big one), and is emptied
 void check_promotion() {
@@ -178,12 +185,15 @@ int main() {
     check(0, 48, {8, 32}, {16, 40});     // new words and kept ones, interleaved: both sets walked in order
     check(0, 48, {16, 24}, {16});        // a new word already kept: left out of the recent set, cut once
     check(0, 48, {}, {0, 8, 16, 24, 32, 40});   // everything owned, all kept
+    check_runs({{4, 4, 16}, {28, 28, 20}}, {8, 16, 32});   // several runs in one write-back
+    check_runs({}, {16});                                   // nothing to write back
     for (uint64_t start = 0; start < 80; start += 4)
         for (uint64_t end = start + 4; end <= 80; end += 4) {
             check(start, end, {16});
             check(start, end, {8, 16, 32, 40});
             check(start, end, {8, 32}, {16, 40});
             check(start, end, {40}, {8, 16, 32});
+            check(start, end, {0, 8, 16, 32, 40, 72});   // owned words at the first and the last offsets too
         }
     check_promotion();
     check_clear();
