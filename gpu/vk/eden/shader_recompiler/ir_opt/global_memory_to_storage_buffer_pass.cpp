@@ -449,6 +449,11 @@ std::optional<LowAddrInfo> TrackLowAddress(IR::Inst* inst) {
     };
 }
 
+/// A predicate selects an address and supplies no base pointer: it resolves to 0 in pointer and table tracking.
+IR::Value SkipPointerPredicate(IR::Value value) {
+    return value.Type() == IR::Type::U1 ? IR::Value{u32{0}} : value;
+}
+
 /// Tries to track the storage buffer address used by a global memory instruction
 std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias, bool skip_c1 = false) {
     const auto pred{[bias, skip_c1](const IR::Inst* inst) -> std::optional<StorageBufferAddr> {
@@ -489,6 +494,7 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias,
     // (hookshot, from Lichii) A pointer loaded from memory is a new address, not an offset into the buffer that supplied it: its
     // load is not followed back to that buffer's own constant-buffer descriptor.
     const auto stop_at_memory = [](IR::Value operand) {
+        operand = SkipPointerPredicate(operand);
         if (!operand.IsImmediate() && IsGlobalMemory(*operand.InstRecursive())) {
             return IR::Value{u32{0}};
         }
@@ -528,7 +534,7 @@ std::optional<StorageBufferAddr> TrackTable(const IR::Value& value) {
         }
         return std::nullopt;
     }};
-    return BreadthFirstSearch(value, pred);
+    return BreadthFirstSearch(value, pred, SkipPointerPredicate);
 }
 
 /// Finds the one constant buffer word added directly into the low address, which is the base
