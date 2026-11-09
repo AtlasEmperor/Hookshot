@@ -51,6 +51,7 @@
 #include "queued_pq.h"
 
 #include "vk_internal.h"
+#include "vk_device_life.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -176,7 +177,8 @@ bool batch_gpu_idle() {
     return on && vkGetSemaphoreCounterValue(dev.device, batch_tl, &done) == VK_SUCCESS && done >= batch_flushed;
 }
 bool batch_on() {
-    static const bool on = [] {
+    static DeviceLatch<bool> on;   // (each device's: its driver)
+    return on.get([] {
         bool radv = false;
         VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -186,8 +188,7 @@ bool batch_on() {
         const bool v = e ? atoi(e) != 0 : radv;
         logf("vk: batched submits %s (RX_VK_BATCH%s)", v ? "on" : "off", !e && radv ? ", on with RADV" : "");
         return v;
-    }();
-    return on && batch_tl != VK_NULL_HANDLE;
+    }) && batch_tl != VK_NULL_HANDLE;
 }
 } // namespace
 void queue_flush_locked() {   // (dev.present_mu held)
@@ -1345,6 +1346,7 @@ void par_worker_main() {
             fn = std::move(par_pool.jobs.front());
             par_pool.jobs.pop_front();
         }
+        device_thread_sync();   // (a segment of the submitting thread's submission: its device is this one's)
         fn();
         std::lock_guard lk(par_pool.mu);
         if (--par_pool.pending == 0) par_pool.done.notify_all();
@@ -2087,6 +2089,7 @@ void sync_watch() {
     for (;;) {
         Sleep(1);
         if (!blocked_n.load()) continue;
+        DeviceUse use;
         std::unique_lock lk(sync_order_mu, std::try_to_lock);
         if (!lk) continue;
         burst_begin(0);   // (a signal from the CPU the thread that made it could not act on)
@@ -3398,11 +3401,8 @@ void framelog_enqueue(std::vector<uint8_t> rec) {
         log_cv.notify_one();
     }
 }
-bool framelog_ready() {
-    const int state = log_state.load(std::memory_order_acquire);
-    if (state) return state > 0;
-    log_state.store(-1, std::memory_order_release);
-    if (!framelog_path()) return false;
+/// The frame log's readback image and slots, on the device in use (false: not made, every one given back)
+bool framelog_objects_make() {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -3422,6 +3422,18 @@ bool framelog_ready() {
             return false;
         }
     }
+    return true;
+}
+bool framelog_ready() {
+    const int state = log_state.load(std::memory_order_acquire);
+    if (state > 0 && !log_image) {   // (a device rebuild let them go: made again on this device, for the same writer)
+        if (framelog_objects_make()) return true;
+        log_state.store(-1, std::memory_order_release);
+        return false;
+    }
+    if (state) return state > 0;
+    log_state.store(-1, std::memory_order_release);
+    if (!framelog_path() || !framelog_objects_make()) return false;
     FILE* f = fopen(framelog_path(), "wb");
     if (!f) {
         framelog_resources_drop();
@@ -3942,6 +3954,7 @@ void replay_thread_main() {
         const auto t_start = std::chrono::steady_clock::now();
         int64_t d0 = 0, x;
         if (timeline) draw_stats(&d0, &x, &x, &x);
+        device_thread_sync();   // (its jobs come from calls the device gate held: a rebuild ran between them only)
         switch (j.kind) {
         case JOB_SUBMIT: submit_job(j.handles, j.value, j.queue); break;
         case JOB_PRESENT:   // (the frame's work whole before it is shown)
@@ -4235,18 +4248,19 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
     return true;
 }
 
-} // namespace
-
-bool replay_start() {
-    menu_init();
-    debug_settings_init(opts.sample_log, opts.exposure_log);   // (the saved choices, then the environment overrides)
-    if (!memory_init() || !vma_init(instance_proc())) return false;
+// (each a value the timelines start at: 0 at start-up; after a device rebuild, where the old device's had reached)
+uint64_t timeline_start = 0, batch_tl_start = 0, rec_timeline_start = 0;
+/// The timelines, the recording slots and the presentation frames, on the device in use (replay_start, a device rebuild)
+bool replay_objects_make() {
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo tsi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     tsi.pNext = &ti;
+    ti.initialValue = timeline_start;
     if (vkCreateSemaphore(dev.device, &tsi, nullptr, &timeline) != VK_SUCCESS) return false;
+    ti.initialValue = batch_tl_start;
     if (vkCreateSemaphore(dev.device, &tsi, nullptr, &batch_tl) != VK_SUCCESS) batch_tl = VK_NULL_HANDLE;
+    ti.initialValue = rec_timeline_start;
     if (vkCreateSemaphore(dev.device, &tsi, nullptr, &rec_timeline) != VK_SUCCESS) rec_timeline = VK_NULL_HANDLE;
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pi.queueFamilyIndex = dev.queue_family;
@@ -4278,6 +4292,66 @@ bool replay_start() {
         vkCreateSemaphore(dev.device, &si, nullptr, &f.acquired);
     }
     if (par_threads() >= 2 && !init_pools_make(pi)) return false;   // (last: nothing after it fails and leaves them made)
+    return true;
+}
+
+// (a device rebuild: the timelines go on from where the old device's reached, every value handed out being done by then)
+void release() {
+    uint64_t reached = 0;
+    if (timeline) vkGetSemaphoreCounterValue(dev.device, timeline, &reached);
+    timeline_start = std::max({reached, q_values.load(), pushed.load()});
+    reached = 0;
+    if (batch_tl) vkGetSemaphoreCounterValue(dev.device, batch_tl, &reached);
+    batch_tl_start = std::max(reached, batch_next);
+    reached = 0;
+    if (rec_timeline) vkGetSemaphoreCounterValue(dev.device, rec_timeline, &reached);
+    rec_timeline_start = std::max(reached, rec_seq);
+    for (VkSemaphore* sem : {&timeline, &batch_tl, &rec_timeline}) {
+        if (*sem) vkDestroySemaphore(dev.device, *sem, nullptr);
+        *sem = VK_NULL_HANDLE;
+    }
+    batch_flushed = batch_next;
+    init_pools_destroy();
+    for (Recording& r : recordings) {
+        if (r.fence) vkDestroyFence(dev.device, r.fence, nullptr);
+        if (r.pool) vkDestroyCommandPool(dev.device, r.pool, nullptr);   // (their command buffers with them)
+        if (r.upload_pool) vkDestroyCommandPool(dev.device, r.upload_pool, nullptr);
+        r = Recording{};
+    }
+    recording_index = 0, rec_cur = nullptr;
+    std::fill(std::begin(ts_pending), std::end(ts_pending), false);
+    if (ts_pool) vkDestroyQueryPool(dev.device, ts_pool, nullptr);
+    ts_pool = VK_NULL_HANDLE;
+    for (Frame& f : frames) {
+        if (f.pool) vkDestroyCommandPool(dev.device, f.pool, nullptr);
+        if (f.done) vkDestroyFence(dev.device, f.done, nullptr);
+        if (f.acquired) vkDestroySemaphore(dev.device, f.acquired, nullptr);
+        f = Frame{};
+    }
+    frame_index = 0;
+    if (shot_view) vkDestroyImageView(dev.device, shot_view, nullptr);
+    shot_view = VK_NULL_HANDLE;
+    for (auto [image, alloc] : {std::pair{&off_image, &off_alloc}, {&shot_image, &shot_image_alloc}, {&made_image, &made_image_alloc}}) {
+        if (*image) destroy_image(*image, *alloc);
+        *image = VK_NULL_HANDLE, *alloc = nullptr;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (shot_bufs[i]) destroy_buffer(shot_bufs[i], shot_allocs[i]);
+        shot_bufs[i] = VK_NULL_HANDLE, shot_allocs[i] = nullptr, shot_maps[i] = nullptr;
+    }
+    if (made_buf) destroy_buffer(made_buf, made_buf_alloc);
+    made_buf = VK_NULL_HANDLE, made_buf_alloc = nullptr, made_map = nullptr;
+    framelog_resources_drop();   // (the writer and its file stay: framelog_ready makes them again on the new device)
+}
+const DeviceLife life(kDeviceOrderReplay, "the replay's recordings and frames", release, replay_objects_make, nullptr);
+
+} // namespace
+
+bool replay_start() {
+    menu_init();
+    debug_settings_init(opts.sample_log, opts.exposure_log);   // (the saved choices, then the environment overrides)
+    if (!memory_init() || !vma_init(instance_proc())) return false;
+    if (!replay_objects_make()) return false;
     logf("vk: replay ready (%s; push descriptors %s (%u), extended dynamic state 3 %s, custom border colours %s)",
          dev.offscreen ? "offscreen" : "window", dev.push_descriptor ? "yes" : "no", dev.max_push_descriptors,
          dev.eds3_blend ? "yes" : "no", dev.custom_border_color ? "yes" : "no");
