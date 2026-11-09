@@ -132,3 +132,5 @@ inline void note_work() {
 #define vmaDestroyBuffer(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyBuffer), ::vmaDestroyBuffer(__VA_ARGS__))
 #define vmaDestroyImage(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyImage), ::vmaDestroyImage(__VA_ARGS__))
 #define vmaInvalidateAllocation(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaInvalidateAllocation), ::vmaInvalidateAllocation(__VA_ARGS__))
+#define vmaDestroyPool(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyPool), ::vmaDestroyPool(__VA_ARGS__))
+#define vmaDestroyAllocator(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyAllocator), ::vmaDestroyAllocator(__VA_ARGS__))
