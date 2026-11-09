@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "vk_texture.h"
+#include "vk_device_life.h"
 #include "vk_menu.h"
 #include "vk_draw.h"
 #include "vk_gprof.h"
@@ -490,8 +491,9 @@ struct AstcPush {
 VkDescriptorSetLayout astc_set = VK_NULL_HANDLE;
 VkPipelineLayout astc_layout = VK_NULL_HANDLE;
 VkPipeline astc_pipe = VK_NULL_HANDLE;
+int astc_state = 0;   // 0 untried, 1 ready, -1 unavailable (on the device in use)
 bool astc_ready() {
-    static int state = 0;   // 0 untried, 1 ready, -1 unavailable
+    int& state = astc_state;
     if (state) return state > 0;
     state = -1;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR || getenv("RX_VK_ASTC_CPU")) return false;
@@ -665,8 +667,9 @@ bool bc_scratch_make() {   // (bc_mu held)
     return true;
 }
 
+int bc_state = 0;   // (as astc_state)
 bool bc_ready() {
-    static int state = 0;
+    int& state = bc_state;
     if (state) return state > 0;
     state = -1;
     if (!astc_ready() || getenv("RX_VK_ASTC_RGBA8") || !dev.features.textureCompressionBC) return false;
@@ -1073,8 +1076,9 @@ struct UnswizzlePush {
 VkDescriptorSetLayout unsw_set = VK_NULL_HANDLE;
 VkPipelineLayout unsw_layout = VK_NULL_HANDLE;
 VkPipeline unsw_pipe = VK_NULL_HANDLE;
+int unsw_state = 0;   // (as astc_state)
 bool unswizzle_ready() {
-    static int state = 0;
+    int& state = unsw_state;
     if (state) return state > 0;
     state = -1;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return false;
@@ -3232,6 +3236,7 @@ std::mutex sparse_mu;
 std::vector<VkSparseImageMemoryBind> sparse_binds;   // (what the next flush binds, under sparse_mu)
 std::vector<VkSparseMemoryBind> sparse_opaque;
 VkDeviceSize sparse_added = 0;
+VkFence sparse_fence = VK_NULL_HANDLE;   // (the binds' own, waited for at once)
 
 /// One sparse block's memory (or n bytes) from the texture's chunks; false when none can be had
 bool sparse_take(Texture* tex, VkDeviceSize n, VkDeviceMemory& mem, VkDeviceSize& off) {
@@ -3267,7 +3272,7 @@ bool sparse_flush(Texture* tex) {
     bi.pImageBinds = &ib;
     bi.imageOpaqueBindCount = sparse_opaque.empty() ? 0 : 1;
     bi.pImageOpaqueBinds = &ob;
-    static VkFence fence = VK_NULL_HANDLE;
+    VkFence& fence = sparse_fence;
     if (!fence) {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         vkCreateFence(dev.device, &fi, nullptr, &fence);
@@ -3416,6 +3421,7 @@ struct TexelViews {
 std::mutex texel_views_mu;
 std::map<VkBuffer, TexelViews> texel_views;
 uint64_t texel_registry_failed_frame = UINT64_MAX;
+uint64_t vram_budget = 0;   // (texture_frame's: worked out at its first look on each device)
 } // namespace
 
 void release_texel_buffer_views(VkBuffer buffer) {
@@ -3764,7 +3770,7 @@ void texture_frame(uint64_t completed) {
     // A budget: RX_VK_VRAM_MB of textures (default 4096), and less when the driver says the process is near what it
     // may have (other programs use the GPU too). The least recently used go first, down to 7/8 of it; nothing the
     // last 8 presents used, nothing recorded work may still read.
-    static uint64_t own = 0;
+    uint64_t& own = vram_budget;
     if (frame_no % 10) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
@@ -4317,5 +4323,116 @@ void texture_read_texels(const nvn_tex* t, unsigned level, unsigned layer0, cons
         for (auto it = a; it != b; ++it) it->second->gpu_written = false, it->second->checked_epoch = 0;
     }
 }
+
+namespace {
+void destroy_compute(VkPipeline& pipe, VkPipelineLayout& layout, VkDescriptorSetLayout& set, int& state) {
+    if (pipe) vkDestroyPipeline(dev.device, pipe, nullptr);
+    if (layout) vkDestroyPipelineLayout(dev.device, layout, nullptr);
+    if (set) vkDestroyDescriptorSetLayout(dev.device, set, nullptr);
+    pipe = VK_NULL_HANDLE, layout = VK_NULL_HANDLE, set = VK_NULL_HANDLE, state = 0;
+}
+// (a device rebuild: every texture goes as an eviction does, what the GPU drew into a flushable one written into its memory first,
+// so that it is uploaded from there when the game uses it again; an unflushable one's image was the only copy of what the GPU drew)
+void release() {
+    // (a VRAM compaction under way ends first: VMA frees nothing of the textures' pool while its pass is open)
+    for (VkImageView v : compact.old_views) vkDestroyImageView(dev.device, v, nullptr);
+    for (VkImage i : compact.old_images) vkDestroyImage(dev.device, i, nullptr);
+    compact.old_views.clear(), compact.old_images.clear();
+    if (image_compact_end())
+        logf("vk: device rebuild: the VRAM compaction under way ended (%llu textures moved)", (unsigned long long)compact.moved);
+    compact.in_pass = compact.pressed = false;
+    compact.value = compact.next_check = compact.moved = compact.moved_bytes = compact.ignored = compact.passes = 0;
+    present_source = nullptr;
+    uint64_t flushed = 0, lost = 0, n = 0;
+    for (auto& [key, t] : textures) {
+        Texture& tex = *t;
+        n++;
+        if (tex.gpu_written && !tex.released) {
+            if (flushable(tex) && flush_texture(tex, tex.gpu, tex.gpu + tex.guest_size)) flushed++;
+            else lost++;
+        } else if (tex.uploaded && !remade_skip_old()) {
+            std::lock_guard lk(from_memory_mu);
+            evicted_from_memory[evicted_key(tex.gpu, tex.width, tex.height, tex.nvn_format)] = tex.guest_size;
+        }
+        for (auto& [view_key, view] : tex.views)
+            if (view) vkDestroyImageView(dev.device, view, nullptr);
+        if (tex.image) destroy_image(tex.image, tex.allocation);
+        for (VkDeviceMemory m : tex.sparse_chunks) vkFreeMemory(dev.device, m, nullptr);
+    }
+    logf("vk: device rebuild: %llu textures let go, %llu the GPU drew written back into their memory, %llu not (their image was "
+         "the only copy)", (unsigned long long)n, (unsigned long long)flushed, (unsigned long long)lost);
+    textures.clear(), by_gpu.clear(), remade.clear();
+    {
+        std::lock_guard lk(vw_mu);
+        vw.clear();
+    }
+    total_bytes = 0;
+    destroy_gen++;
+    {
+        std::lock_guard lk(seg_init_mu);   // (the replay's segments' init command buffers, of the old device)
+        seg_inits.clear();
+    }
+    for (Dead& d : dead) {
+        for (VkImageView v : d.views) vkDestroyImageView(dev.device, v, nullptr);
+        destroy_image(d.image, d.allocation);
+        if (d.buffer) destroy_buffer(d.buffer, d.buffer_alloc);
+        for (VkDeviceMemory m : d.memory) vkFreeMemory(dev.device, m, nullptr);
+    }
+    dead.clear();
+    {
+        std::lock_guard lk(bc_mu);
+        if (bc_scratch_view) vkDestroyImageView(dev.device, bc_scratch_view, nullptr);
+        if (bc_scratch) destroy_image(bc_scratch, bc_scratch_alloc);
+        if (bc_out) destroy_buffer(bc_out, bc_out_alloc);
+        if (bc_scratch2_view) vkDestroyImageView(dev.device, bc_scratch2_view, nullptr);
+        if (bc_scratch2) destroy_image(bc_scratch2, bc_scratch2_alloc);
+        bc_scratch = VK_NULL_HANDLE, bc_scratch_alloc = nullptr, bc_scratch_view = VK_NULL_HANDLE;
+        bc_out = VK_NULL_HANDLE, bc_out_alloc = nullptr;
+        bc_scratch2 = VK_NULL_HANDLE, bc_scratch2_alloc = nullptr, bc_scratch2_view = VK_NULL_HANDLE;
+        bc_have = false, bc_scratch_fresh = bc_scratch2_fresh = false;
+    }
+    destroy_compute(astc_pipe, astc_layout, astc_set, astc_state);
+    destroy_compute(bc_pipe, bc_layout, bc_set, bc_state);
+    destroy_compute(unsw_pipe, unsw_layout, unsw_set, unsw_state);
+    for (Arena& a : arenas) destroy_buffer(a.buffer, a.allocation);
+    arenas.clear();
+    if (rb_fence) vkDestroyFence(dev.device, rb_fence, nullptr);
+    if (rb_pool) vkDestroyCommandPool(dev.device, rb_pool, nullptr);   // (rb_cmd with it)
+    rb_pool = VK_NULL_HANDLE, rb_cmd = VK_NULL_HANDLE, rb_fence = VK_NULL_HANDLE;
+    {
+        std::lock_guard lk(sparse_mu);
+        if (sparse_fence) vkDestroyFence(dev.device, sparse_fence, nullptr);
+        sparse_fence = VK_NULL_HANDLE;
+        sparse_binds.clear(), sparse_opaque.clear();
+    }
+    {
+        std::lock_guard lk(texel_views_mu);
+        for (const auto& [buffer, views] : texel_views)
+            for (const auto& [key, view] : views.views)
+                if (view) vkDestroyBufferView(dev.device, view, nullptr);
+        texel_views.clear();
+        texel_registry_failed_frame = UINT64_MAX;
+    }
+    {
+        std::lock_guard lk(fmt_mu);
+        fmt_cache.clear();
+    }
+    vram_budget = 0;
+    {
+        std::lock_guard lk(pool_mu);   // (the render targets' images waiting for a texture of their shape)
+        for (auto& [key, pooled] : target_pool)
+            for (Pooled& image : pooled) pool_destroy(image);
+        target_pool.clear();
+        pool_bytes = pool_n = 0;
+    }
+}
+// (a recording thread's upload command buffer and barrier note, of the device before)
+void thread_reset() {
+    up_cmd = VK_NULL_HANDLE, up_used = false, tl_seg = 0, tl_seg_index = -1;
+    last_barrier_cmd = VK_NULL_HANDLE, last_barrier_epoch = 0;
+    last_pass_end_cmd = VK_NULL_HANDLE, last_pass_end_epoch = 0;
+}
+const DeviceLife life(kDeviceOrderTextures, "textures", release, nullptr, thread_reset);
+} // namespace
 
 } // namespace mkwvk
