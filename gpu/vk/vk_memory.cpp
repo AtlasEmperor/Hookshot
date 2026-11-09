@@ -26,6 +26,7 @@
 #include <windows.h>
 
 #include "vk_internal.h"
+#include "vk_device_life.h"
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
@@ -101,6 +102,7 @@ struct SrwMutex {   // (a slim reader/writer lock: half std::mutex's cost, taken
 };
 SrwMutex pools_mu;
 uint32_t generation = ~0u;
+uint32_t host_pointer_type = UINT32_MAX;   // (import_pool's memory type for host pointers on the device in use)
 uint64_t align = 4096;
 uint64_t max_import_size = UINT64_MAX;
 int failures = 0;
@@ -142,6 +144,8 @@ struct UdmabufCreate { uint32_t memfd, flags; uint64_t offset, size; };
 constexpr unsigned long kUdmabufCreate = (1ul << 30) | (sizeof(UdmabufCreate) << 16) | ('u' << 8) | 0x42;   // (_IOW('u', 0x42, ...))
 int dmabuf_memfd = -2, dmabuf_dev = -1, dmabuf_failures = 0;
 uint64_t dmabuf_limit = 0;
+uint32_t dmabuf_type = UINT32_MAX;   // (dma_buf_memory's memory type on the device in use)
+VkFence dmabuf_fence = VK_NULL_HANDLE;   // (import_dma_buf_pieces' binds, on the device in use)
 
 /// The memory of guest [lo, lo + size) as an imported dma-buf; VK_NULL_HANDLE when udmabuf or the import refused it
 VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
@@ -152,7 +156,7 @@ VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
             logf("vk: guest %#llx..%#llx: no udmabuf (errno %d)", (unsigned long long)lo, (unsigned long long)(lo + size), errno);
         return VK_NULL_HANDLE;
     }
-    static uint32_t type = UINT32_MAX;   // (the same for every dma-buf of the window: asked once)
+    uint32_t& type = dmabuf_type;   // (the same for every dma-buf of the window: asked once a device)
     if (type == UINT32_MAX) {
         VkMemoryFdPropertiesKHR fp{VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
         if (vkGetMemoryFdPropertiesKHR(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fp) == VK_SUCCESS) {
@@ -235,7 +239,7 @@ bool import_dma_buf_pieces(uint64_t lo, uint64_t hi, uint64_t piece, Pool& p) {
         VkBindSparseInfo si{VK_STRUCTURE_TYPE_BIND_SPARSE_INFO};
         si.bufferBindCount = 1;
         si.pBufferBinds = &bb;
-        static VkFence fence = VK_NULL_HANDLE;   // (the background importer and the recording thread can both import)
+        VkFence& fence = dmabuf_fence;   // (the background importer and the recording thread can both import)
         static std::mutex fence_mu;
         std::lock_guard fk(fence_mu);
         if (!fence) {
@@ -379,8 +383,8 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
         return true;
     }
 #endif
-    // (the host allocations' memory type: the same for every pointer, asked once)
-    static uint32_t type = UINT32_MAX;
+    // (the host allocations' memory type: the same for every pointer, asked once a device)
+    uint32_t& type = host_pointer_type;
     if (type == UINT32_MAX) {
         VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
         if (vkGetMemoryHostPointerPropertiesEXT(dev.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr,
@@ -448,6 +452,8 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
 uint64_t* guest_pages = nullptr;
 uint64_t guest_pages_address = 0;
 VkBuffer guest_pages_buffer = VK_NULL_HANDLE;
+VmaAllocation guest_pages_alloc = nullptr;
+bool guest_pages_tried = false;   // (memory_guest_pages made it, or failed to, on the device in use)
 // (hookshot, 11-07) A change to the table made while a submission is recorded goes into that submission's upload commands, after
 // the mirror copies it records there, instead of into the table at once: the table is read by the GPU, and work submitted
 // before (still running, or queued) read the new entries early. A pool's range zeroed at its merge read as unmapped (zero
@@ -518,7 +524,7 @@ bool memory_table_flush() {
 uint64_t memory_guest_pages() {
     static std::mutex mu;
     std::lock_guard lk(mu);
-    static bool tried = false;
+    bool& tried = guest_pages_tried;
     if (tried) return guest_pages_address;
     tried = true;
     if (getenv("RX_VK_NO_FOLLOW")) return 0;   // (on: Kokiri's lighting. The menus' blank text was the rule in graphics stages, now compute only)
@@ -536,6 +542,7 @@ uint64_t memory_guest_pages() {
     da.buffer = b;
     guest_pages_address = vkGetBufferDeviceAddress(dev.device, &da);
     guest_pages_buffer = b;
+    guest_pages_alloc = a;
     std::lock_guard pk(pools_mu);
     guest_pages = (uint64_t*)mapped;
     for (auto& kv : imported) guest_pages_set(kv.second.lo, kv.second.hi, kv.second.address);
@@ -847,12 +854,12 @@ uint64_t cap_free_bytes = 0;   // (cap_free_mu)
 // (the spare buffers: 12 and, on a card of 6 GB or less, 32 MB of them; RX_VK_CAP_SPARE_MB=<n>: that many, 0: as before.
 // After a load the retired ones, 40-60 MB each, stayed as spares for good)
 uint64_t cap_spare_max() {
-    static const uint64_t v = [] {
+    static DeviceLatch<uint64_t> v;   // (the card's)
+    return v.get([] {
         if (const char* e = getenv("RX_VK_CAP_SPARE_MB")) return e[0] && atoll(e) ? (uint64_t)atoll(e) << 20 : ~0ull;
         uint64_t used = 0, allowed = 0;
         return vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 32ull << 20 : ~0ull;
-    }();
-    return v;
+    });
 }
 void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size) {
     std::lock_guard lk(cap_free_mu);
@@ -1801,6 +1808,16 @@ void bg_main() {
             r = bg_queue.front();
             bg_queue.pop_front();
         }
+        // (a rebuild holding the gate: the range handed back first, so that a lookup waiting for it imports it itself rather
+        // than wait for this thread at the gate. memory_imports_give_back does it for a range taken before the gate closed)
+        if (device_gate_closed()) {
+            std::lock_guard lk(bg_mu);
+            std::erase(bg_inflight, r.first);
+            bg_done_cv.notify_all();
+        }
+        // (the import and its hand-over in one use of the device: a device rebuild's release finds the pool in bg_ready and
+        // gives it back, or the import is made on the new device)
+        DeviceUse use;
         Pool p;
         const bool ok = import_pool(r.first, r.second, p);
         std::lock_guard lk(bg_mu);
@@ -2077,14 +2094,14 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
 //   pool at the submission's end, so the CPU (and everything that reads guest memory) sees it.
 // RX_VK_MIRROR=0: no mirrors; RX_VK_MIRROR_MB: their budget (default 3072).
 bool mirror_on() {
-    static const int on = [] {
+    static DeviceLatch<int> on;   // (each device's: whether it is a discrete GPU)
+    return on.get([] {
         const char* e = getenv("RX_VK_MIRROR");
         const bool discrete = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
         const int v = e ? atoi(e) != 0 : discrete;
         logf("vk: VRAM mirror of buffer pools %s", v ? "on" : "off");
         return v;
-    }();
-    return on != 0;
+    }) != 0;
 }
 
 /// (hookshot, smoothness) A read binding in a chunk not imported yet: its import goes to the background thread and the binding is
@@ -2144,7 +2161,8 @@ bool preset_caps_memory() {
 namespace {
 uint64_t mirror_budget() {
     // (a quarter of the card, at most the 3 GB it was for all: on a 6 GB laptop those and the textures were past what the card has)
-    static const uint64_t b = [] {
+    static DeviceLatch<uint64_t> budget;   // (the card's)
+    const uint64_t b = budget.get([] {
         if (const char* e = getenv("RX_VK_MIRROR_MB")) return (uint64_t)atoi(e) << 20;
         uint64_t vram = 0;
         for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
@@ -2153,7 +2171,7 @@ uint64_t mirror_budget() {
         // percent and the frame stuttering)
         if (vram && vram <= (6ull << 30) + (512ull << 20)) return vram / 8;
         return vram ? std::min<uint64_t>(vram / 4, 3072ull << 20) : (uint64_t)(3072ull << 20);
-    }();
+    });
     // (the Insert menu's quality preset sets one, 256 MB at Minimum (4GB): it was never read, and an 8 GB card kept ~2 GB of
     // mirrors with the 4GB preset on, 2026-11-08)
     // (only on a card the preset is for: preset_caps_memory)
@@ -2521,6 +2539,11 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};
 }
 
+void memory_imports_give_back() {
+    std::lock_guard lk(bg_mu);
+    bg_queue.clear(), bg_inflight.clear();
+    bg_done_cv.notify_all();
+}
 void memory_pool_created(uint64_t gpu, uint64_t size) {
     // (RX_VK_BG_IMPORT=1 only: imported eagerly, every pool the game made, most never used by the GPU, the thread's
     // page locking stalled the game's threads (3-7 fps); chunked imports at first use are the default)
@@ -2811,7 +2834,10 @@ void retired_imports_give_back() {   // (pools_mu held)
 #ifdef _WIN32
     // (not on NVIDIA: kept there, ~20 areas of play left 6.8 GB of retired pools imported on an RTX 3070 (8 GB), and the next area
     // lost the device, twice; given back, the same tour finished every area (issue 1057). The losses above were Intel's and AMD's)
-    static const bool keep = getenv("RX_VK_KEEP_RETIRED") ? getenv("RX_VK_KEEP_RETIRED")[0] != '0' : dev.props.vendorID != 0x10DE;
+    static DeviceLatch<bool> keep_latch;   // (the vendor's)
+    const bool keep = keep_latch.get([] {
+        return getenv("RX_VK_KEEP_RETIRED") ? getenv("RX_VK_KEEP_RETIRED")[0] != '0' : dev.props.vendorID != 0x10DE;
+    });
 #else
     static const bool keep = getenv("RX_VK_KEEP_RETIRED") && getenv("RX_VK_KEEP_RETIRED")[0] != '0';
 #endif
@@ -3222,13 +3248,14 @@ bool shadow_rules_raw() {
     return v;
 }
 bool shadow_room(uint64_t n) {   // (the shadows' budget, and room in VRAM: the textures and the mirrors come first)
-    static const uint64_t cap = [] {
+    static DeviceLatch<uint64_t> cap_latch;   // (the card's)
+    const uint64_t cap = cap_latch.get([] {
         if (const char* e = getenv("RX_VK_WB_SHADOW_MB")) return (uint64_t)atoll(e) << 20;
         uint64_t used = 0, allowed = 0;
         const uint64_t eighth = vram_usage(&used, &allowed) && allowed ? allowed / 8 : (uint64_t)512 << 20;   // (unsigned long on Linux)
         // (an integrated GPU's VRAM is the system's RAM: 512 MB at most there)
         return dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? std::min<uint64_t>(eighth, (uint64_t)512 << 20) : eighth;
-    }();
+    });
     if (shadow_bytes + n > cap) return false;
     uint64_t used = 0, allowed = 0, block_free = 0;
     if (!vram_usage(&used, &allowed, &block_free) || !allowed) return true;
@@ -3652,4 +3679,98 @@ void memory_stats(int64_t* mirrors, uint64_t* mirror_mb, int64_t* sync_bytes, in
     *mirrors = st_mirrors, *mirror_mb = mirror_bytes >> 20, *sync_bytes = st_sync_bytes, *sync_copies = st_sync_copies;
     *wb_bytes = st_wb_bytes;
 }
+namespace {
+void destroy_pool(Pool& p) {
+    if (p.mirror) destroy_buffer(p.mirror, p.mirror_alloc);
+    if (p.shadow) destroy_buffer(p.shadow, p.shadow_alloc);
+    if (p.buffer) destroy_import_buffer(p.buffer);
+    if (p.memory) vkFreeMemory(dev.device, p.memory, nullptr);
+    for (VkDeviceMemory m : p.pieces) vkFreeMemory(dev.device, m, nullptr);
+    p.mirror = VK_NULL_HANDLE, p.shadow = VK_NULL_HANDLE, p.buffer = VK_NULL_HANDLE, p.memory = VK_NULL_HANDLE;
+    p.pieces.clear();
+}
+void destroy_capture(Capture& c) {
+    if (c.buffer) destroy_buffer(c.buffer, c.alloc);
+    c.buffer = VK_NULL_HANDLE, c.alloc = nullptr, c.map = nullptr, c.bsize = 0;
+}
+// (a device rebuild: every import, mirror, shadow and capture buffer given back, with what the GPU wrote already back in guest
+// memory (each submission's end); the pools are imported again at their next binding, on the new device)
+void release() {
+    {
+        std::lock_guard lk(bg_mu);
+        bg_queue.clear(), bg_inflight.clear();
+        for (auto& [lo, p] : bg_ready) destroy_pool(p);
+        bg_ready.clear();
+    }
+    {
+        std::lock_guard lk(pools_mu);
+        for (auto& [lo, p] : imported) destroy_pool(p);
+        imported.clear();
+        for (auto& nh : retired_pools) destroy_pool(nh.mapped());
+        retired_pools.clear();
+        for (auto& nh : evicted_pools) destroy_pool(nh.mapped());
+        evicted_pools.clear();
+        for (const DeadMirror& d : dead_mirrors) destroy_buffer(d.buffer, d.alloc);
+        dead_mirrors.clear();
+        for (const DeadImport& d : dead_imports) {
+            destroy_import_buffer(d.buffer);
+            vkFreeMemory(dev.device, d.memory, nullptr);
+            for (VkDeviceMemory m : d.pieces) vkFreeMemory(dev.device, m, nullptr);
+        }
+        dead_imports.clear();
+        for (const DeadShadow& d : dead_shadows) destroy_buffer(d.buffer, d.alloc);
+        dead_shadows.clear();
+        mirror_bytes = 0, shadow_bytes = 0;
+        mirror_wanted.clear(), mirror_synced.clear(), writebacks.clear();
+        last_pool = nullptr;
+        std::fill(std::begin(pool_cache), std::end(pool_cache), nullptr);
+        pools_gen++;
+        guest_pools_gen++;
+        generation = ~0u;   // (the pool table made again at the next memory_sync, at the new device's alignment)
+        if (guest_pages_buffer) destroy_buffer(guest_pages_buffer, guest_pages_alloc);
+        guest_pages_buffer = VK_NULL_HANDLE, guest_pages_alloc = nullptr, guest_pages = nullptr, guest_pages_address = 0;
+        guest_pages_tried = false;
+    }
+    {
+        std::lock_guard lk(cap_mu);
+        for (auto& c : captures) destroy_capture(*c);
+        captures.clear();
+        for (auto& c : spare) destroy_capture(*c);
+        spare.clear();
+        for (auto& [gen, b] : cap_bufs) destroy_buffer(b.buffer, b.alloc);
+        cap_bufs.clear();
+        cap_bytes = 0;
+    }
+    {
+        std::lock_guard lk(cap_free_mu);
+        for (const FreeBuf& b : cap_free) destroy_buffer(b.buffer, b.alloc);
+        cap_free.clear();
+        cap_free_bytes = 0;
+    }
+    for (WbdTable& t : wbd_tables) {
+        if (t.buf) destroy_buffer(t.buf, t.alloc);
+        t = WbdTable{};
+    }
+    wbd_table_next = 0;
+    if (wbd_pipe.pipe) vkDestroyPipeline(dev.device, wbd_pipe.pipe, nullptr);
+    if (wbd_pipe.layout) vkDestroyPipelineLayout(dev.device, wbd_pipe.layout, nullptr);
+    wbd_pipe.pipe = VK_NULL_HANDLE, wbd_pipe.layout = VK_NULL_HANDLE, wbd_pipe.tried = false;
+    host_pointer_type = UINT32_MAX;
+#ifdef __linux__
+    if (dmabuf_fence) vkDestroyFence(dev.device, dmabuf_fence, nullptr);
+    dmabuf_fence = VK_NULL_HANDLE, dmabuf_type = UINT32_MAX;
+#endif
+}
+bool rebuild() { return memory_init(); }
+// (a recording thread's pools, bindings and spans of the device before)
+void thread_reset() {
+    for (TlPool& t : tl_pools) t = TlPool{};
+    for (BindMemo& m : bind_memo) m = BindMemo{};
+    guest_span = GuestSpan{};
+    table_pending.clear(), table_defer = false;
+    for (SubmittedPage& page : submitted_pages) page = SubmittedPage{};
+    rb_joined = 0;
+}
+const DeviceLife life(kDeviceOrderMemory, "guest memory imports", release, rebuild, thread_reset);
+} // namespace
 } // namespace mkwvk

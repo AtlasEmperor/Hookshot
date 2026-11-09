@@ -232,6 +232,9 @@ void memory_rb_segments_begin(uint64_t base, uint64_t n);   // (and a parallel r
 void memory_note_gpu_write(uint64_t gpu, uint64_t size);
 /// (vk_replay.cpp) The GPU's progress on the recordings' timeline, and a wait for it to reach v
 uint64_t vk_timeline_completed();
+/// (vk_memory.cpp; a device rebuild, once the gate holds new uses) the background imports queued or under way handed back to
+/// the lookups waiting for them, which import those ranges themselves: none waits for the import thread held at the gate
+void memory_imports_give_back();
 /// A future submission completion covering images retired during replay; zero: no safe value.
 uint64_t vk_retirement_value();
 void vk_timeline_wait(uint64_t v);
