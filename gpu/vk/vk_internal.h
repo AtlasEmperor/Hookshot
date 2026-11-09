@@ -64,6 +64,7 @@ struct DeviceFacts {
         return mesh_fallback || (task_mesh_fallback && has_task);
     }
     bool robust_buffers = false;  // (robustBufferAccess and robustBufferAccess2 given: the Robust buffers row, robust_choice.h)
+    bool robust_offered = false;  // (the GPU offers both, whatever the row asks for)
     bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
@@ -306,6 +307,16 @@ PFN_vkGetInstanceProcAddr instance_proc();   // vk_main.cpp
 
 /// hdr_allowed false: the SDR surface even when the display lists an HDR10 one
 bool create_swapchain(uint32_t width, uint32_t height, bool hdr_allowed = true);
+// (vk_main.cpp) the GPU the GPU device row asks for, null when none has Vulkan 1.3; a device made on a GPU without reading the
+// one in use (d: every fact of it); that device made the one in use; the robustness features a GPU offers (robustBufferAccess2
+// only with VK_EXT_robustness2)
+VkPhysicalDevice pick_device();
+bool make_device(VkPhysicalDevice gpu, DeviceFacts& d);
+void adopt_device(const DeviceFacts& d);
+struct GpuRobustness { bool buffer_access2 = false, buffer_access = false; };
+GpuRobustness gpu_robustness(VkPhysicalDevice gpu);
+[[noreturn]] void replay_fatal(const char* why);   // (vk_replay.cpp: logged, to stderr, and the process ended with code 3)
+void replay_quiesce();   // (vk_replay.cpp: every call into the renderer held, its work recorded and done, the device idle)
 bool replay_start();                          // vk_replay.cpp
 bool precompile_wanted();                     // vk_draw.cpp
 void precompile_run(void (*progress)(size_t done, size_t total));

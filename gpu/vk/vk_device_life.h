@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <mutex>
 
+#include "device_change.h"
+
 namespace mkwvk {
 
 /// The device's generation: 1 for the first VkDevice, one more for each rebuild
@@ -93,10 +95,12 @@ void device_use_yield();
 /// A thread of its own makes the device again once the rows rest, when the effective choice differs from the device in use
 void device_rebuild_request(int gpu_row_in_use, int robust_row_in_use);
 /// The last request's outcome: seq counts the outcomes (0: none yet); the rows that took effect (the ones asked for, or the
-/// ones before on a failure), what the player is told, and the time the game was held when the device was made again
+/// ones before on a failure), the change asked for, what the player is told, and the time the game was held when the device
+/// was made again
 struct DeviceRebuildOutcome {
     uint64_t seq = 0;
     bool ok = true, rebuilt = false;
+    device_change::Change change = device_change::Change::None;
     int gpu_row = 0, robust_row = 0;
     const char* text = "";   // (a static string)
     double pause_ms = 0;
