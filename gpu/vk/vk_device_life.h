@@ -35,9 +35,11 @@ constexpr int kDeviceOrderSwapchain = 55;  // (the window's swapchain: the prese
 constexpr int kDeviceOrderUpscaler = 58;   // (the upscalers' own state, NGX's: after the chains that drive them let go)
 constexpr int kDeviceOrderPresent = 60;    // (presentation: frame generation, the overlays, the upscalers' chains, profiling)
 
-// (the rebuild's own steps, vk_device_rebuild.cpp) the gate closed: true once no use is in progress, false when one still is
-// at the deadline (the gate open again); the gate open; every module's release, in decreasing order; every module's rebuild,
-// in increasing order (false: one failed, logged); the generation advanced, with the calling thread's caches
+// (the rebuild's own steps, vk_device_rebuild.cpp) the gate closed at the end of the game's next frame (device_frame_end), or
+// at `by` when no frame ends before it; the gate closed: true once no use is in progress, false when one still is at the
+// deadline (the gate open again); the gate open; every module's release, in decreasing order; every module's rebuild, in
+// increasing order (false: one failed, logged); the generation advanced, with the calling thread's caches
+void device_gate_close_at_frame_end(std::chrono::steady_clock::time_point by);
 bool device_gate_close(std::chrono::steady_clock::time_point deadline);
 /// A rebuild holds new uses at the gate (a use begun now waits for it)
 bool device_gate_closed();
@@ -90,6 +92,10 @@ struct DeviceLocal {
 /// Inside a DeviceUse, between two slices of a long wait (no lock held): a rebuild waiting for the gate runs now, and the wait
 /// goes on after it, on the new device
 void device_use_yield();
+
+/// Inside the DeviceUse of the game's present, once the frame is handed over: a rebuild waiting for a frame's end closes the
+/// gate here, so the game's next call waits for it
+void device_frame_end();
 
 /// The Insert menu's GPU device or Robust buffers row changed (rows in use: what took effect, for the way back on a failure).
 /// A thread of its own makes the device again once the rows rest, when the effective choice differs from the device in use
