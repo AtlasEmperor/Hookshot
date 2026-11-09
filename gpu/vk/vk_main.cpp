@@ -401,6 +401,10 @@ bool create_device() {
     dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
     dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
+    // (no update-after-bind descriptors are used: never enabled, so robustBufferAccess needs no robustBufferAccessUpdateAfterBind,
+    // VUID-VkDeviceCreateInfo-robustBufferAccess-10247)
+    f12.descriptorBindingUniformBufferUpdateAfterBind = f12.descriptorBindingStorageBufferUpdateAfterBind = VK_FALSE;
+    f12.descriptorBindingUniformTexelBufferUpdateAfterBind = f12.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_FALSE;
     dev.vk12 = f12;
     dev.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane

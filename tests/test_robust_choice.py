@@ -27,6 +27,13 @@ def main():
                       ("f.features.robustBufferAccess = robust_ok", "robustBufferAccess follows the effective choice")):
         if need not in create:
             raise SystemExit("create_device: %s is missing (%s)" % (need, why))
+    # (VUID-VkDeviceCreateInfo-robustBufferAccess-10247: robustBufferAccess with update-after-bind buffer descriptors needs
+    # robustBufferAccessUpdateAfterBind; none are used, so none are enabled)
+    created = create.index("vkCreateDevice(")
+    for bit in ("UniformBuffer", "StorageBuffer", "UniformTexelBuffer", "StorageTexelBuffer"):
+        cleared = create.find("f12.descriptorBinding%sUpdateAfterBind = " % bit)
+        if cleared < 0 or cleared > created:
+            raise SystemExit("create_device enables descriptorBinding%sUpdateAfterBind" % bit)
     with tempfile.TemporaryDirectory(prefix="robust-choice-") as tmp:
         exe = Path(tmp) / "robust-choice"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror",
