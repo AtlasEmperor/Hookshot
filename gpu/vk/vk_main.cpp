@@ -19,6 +19,7 @@
 #include "vk_framegen.h"
 #include "vk_internal.h"
 #include "gpu_choice.h"
+#include "robust_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
@@ -377,25 +378,8 @@ bool create_device() {
     // for single frames (the black flashes); with it, neither in A/B runs at the same GPU time. Lichii's OoT branch keeps it on too.
     // The 'Robust buffers' row of hookshot_options.ini chooses (0 Auto: on, on every vendor; 1 Off; 2 On); RX_VK_ROBUST=0 or 1
     // over it. Off is null descriptors only: some NVIDIA cards ran slower with it on, issues 394, 418, 419)
-    static const bool robust = []() -> bool {
-        if (const char* e = getenv("RX_VK_ROBUST")) return atoi(e) != 0;
-        char exe[MAX_PATH];
-        const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
-        std::string ini(exe, n);
-        ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
-        int v = 0;   // (Auto)
-        if (FILE* f = fopen(ini.c_str(), "r")) {
-            char line[80];
-            while (fgets(line, sizeof line, f))
-                if (!strncmp(line, "robust_buffers=", 15)) {
-                    v = atoi(line + 15);
-                    break;
-                }
-            fclose(f);   // (once: the PR closed it twice when the row said Auto)
-        }
-        return v != 1;   // (Auto and On: on)
-    }();
-    const bool robust_ok = robust && robust2.robustBufferAccess2 && f.features.robustBufferAccess;
+    const bool robust = robust_choice::requested(opts.robust, getenv("RX_VK_ROBUST"));   // (the menu's ini: pick_device's menu_init)
+    const bool robust_ok = robust_choice::effective(robust, robust2.robustBufferAccess2, f.features.robustBufferAccess);
     robust2.robustBufferAccess2 = robust_ok ? VK_TRUE : VK_FALSE;
     robust2.robustImageAccess2 = VK_FALSE;
     dev.null_descriptor = dev.null_descriptor && robust2.nullDescriptor;
