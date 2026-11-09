@@ -51,6 +51,7 @@
 
 #include "vk_paths.h"
 #include "vk_internal.h"
+#include "vk_device_life.h"
 #include "vk_jobs.h"
 #include "vk_draw.h"
 
@@ -823,20 +824,20 @@ std::mutex shader_mu;
 std::unordered_map<uint64_t, std::vector<std::unique_ptr<Program>>> programs;   // by the stages' code keys
 std::unordered_map<uint64_t, std::vector<Code>> codes;                          // by program serial
 const Shader::Profile& profile() {
-    static const Shader::Profile p = make_profile();
-    return p;
+    static DeviceLatch<Shader::Profile> p;   // (the device's: its storage alignment, its features)
+    return p.get(make_profile);
 }
 
 /// The profile of a stage pinned to 32 lanes (compute, and the mesh fallback's compute stages, pin_subgroup): the guest's warp
 /// is the host's there, so the short path for warp ops, as before. The long one in every compute program made their SPIR-V new
 /// and longer: the driver's cache had none of it, and AMD compiled the shaders for hours
 const Shader::Profile& profile_pinned() {
-    static const Shader::Profile p = [] {
+    static DeviceLatch<Shader::Profile> p;   // (the device's, as profile's)
+    return p.get([] {
         Shader::Profile q = profile();
         if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
         return q;
-    }();
-    return p;
+    });
 }
 
 /// The profile of a graphics stage: one the GPU pins to 32 lanes as well (pin_subgroup: RDNA2's and RDNA3's fragment, task
@@ -844,11 +845,12 @@ const Shader::Profile& profile_pinned() {
 /// there, every graphics stage on RDNA1's 0x20) take the long one. The fragment shuffle fallback stays in both: it is AMD's
 /// compiler, not the lanes. RX_VK_WARP64 still sets every graphics stage
 const Shader::Profile& profile_graphics(VkShaderStageFlags stage) {
-    static const Shader::Profile pinned = [] {
+    static DeviceLatch<Shader::Profile> pinned_latch;   // (the device's, as profile's)
+    const Shader::Profile& pinned = pinned_latch.get([] {
         Shader::Profile q = profile();
         q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
         return q;
-    }();
+    });
     static const bool forced = getenv("RX_VK_WARP64") != nullptr;
     return !forced && (dev.sg32_stages & stage) ? pinned : profile();
 }
@@ -1074,6 +1076,9 @@ FILE* disk_out = nullptr;
 FILE* disk_idx = nullptr;
 bool disk_listing = false;
 bool disk_on = false;
+std::mutex disk_open_mu;
+std::atomic<bool> disk_opened{false};   // (disk_init ran for the device in use: disk_reopen lets it run for another one)
+uint64_t disk_opened_stamp = 0;         // (the stamp it opened the cache with)
 std::atomic<int64_t> st_cache_hits{0};
 constexpr uint32_t kDiskMagic = 0x31505348;
 constexpr uint32_t kIdxMagic = 0x58495048;   // ("HPIX", then a version and the cache's stamp; 20 bytes a record: key, size, kind)
@@ -1154,8 +1159,10 @@ uint64_t disk_stamp() {
 }
 
 void disk_init() {
-    static std::once_flag once;
-    std::call_once(once, [] {
+    if (disk_opened.load(std::memory_order_acquire)) return;
+    std::lock_guard open_lk(disk_open_mu);
+    if (disk_opened.load(std::memory_order_relaxed)) return;
+    [] {
         if (getenv("RX_VK_NO_PROGRAM_CACHE")) return;
         char exe[MAX_PATH];
         const DWORD n = game_module_path(exe, MAX_PATH);
@@ -1164,24 +1171,26 @@ void disk_init() {
         // (one Hookshot at a time on a cache: a second one, started while the first wrote, took the record being written for one
         // cut short and cut the file there, under the first, whose list of records then named bytes written over since. Held
         // until the process ends)
-        {
+        static const bool taken = [&path] {   // (taken once a process: disk_reopen opens the same file again)
             uint64_t h = 0xCBF29CE484222325ull;
             for (const char ch : path) h = (h ^ (uint8_t)tolower((unsigned char)ch)) * 1099511628211ull;
             char name[64];
             snprintf(name, sizeof name, "Local\\HookshotProgramCache_%016llx", (unsigned long long)h);
 #ifdef _WIN32
             const HANDLE held = CreateMutexA(nullptr, FALSE, name);
-            const bool taken = !held || GetLastError() == ERROR_ALREADY_EXISTS;
+            const bool in_use = !held || GetLastError() == ERROR_ALREADY_EXISTS;
 #else   // (linux: a lock on a file beside the cache, let go when the process ends)
             const int fd = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-            const bool taken = fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) != 0;
+            const bool in_use = fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) != 0;
 #endif
-            if (taken) {
-                logf("vk: program cache %s: another Hookshot is using it: this one runs without it", path.c_str());
-                return;
-            }
+            return in_use;
+        }();
+        if (taken) {
+            logf("vk: program cache %s: another Hookshot is using it: this one runs without it", path.c_str());
+            return;
         }
         const uint64_t stamp = disk_stamp();
+        disk_opened_stamp = stamp;
         // (hookshot_programs.idx: the records' heads, 20 bytes each, in the file's order. The records follow one another in the
         // file, so finding them was a read of each one's head, 22000 of them over the 4 GB: seconds at every start, each a read
         // somewhere else on the disk (and on a compressed file system a block of 128 KB unpacked for those 20 bytes). The index
@@ -1291,7 +1300,24 @@ void disk_init() {
         disk_path = path;
         disk_on = disk_out != nullptr && disk_in != nullptr;
         logf("vk: program cache %s: %zu program keys kept, %lld KB", path.c_str(), disk_records.size(), (long long)(good >> 10));
-    });
+    }();
+    disk_opened.store(true, std::memory_order_release);
+}
+/// A device whose translation differs (disk_stamp: its mesh shaders, its matrix layout, its NaN guard): the program cache
+/// opened for the device before is closed and emptied, and opened again for this one (a file of another stamp starts over)
+void disk_reopen() {
+    if (!disk_opened.load() || disk_stamp() == disk_opened_stamp) return;
+    {
+        std::lock_guard lk(disk_mu);
+        for (FILE** f : {&disk_in, &disk_out, &disk_idx}) {
+            if (*f) fclose(*f);
+            *f = nullptr;
+        }
+        disk_records.clear(), disk_taken.clear();
+        disk_on = false;
+    }
+    disk_opened.store(false);
+    disk_init();
 }
 
 void put_bytes(std::vector<uint8_t>& o, const void* d, size_t n) {
@@ -2822,5 +2848,34 @@ void program_released(const nvn_prog* p) {
     std::lock_guard lk(shader_mu);
     codes.erase(p->serial);
 }
+
+namespace {
+// (a device rebuild: every program translated or loaded again at its next use, from the program cache when it has it; the
+// guest code read for the game's programs stays)
+void release() {
+    std::lock_guard lk(shader_mu);
+    for (auto& [key, variants] : programs)
+        for (auto& p : variants) {
+            for (Stage& st : p->stages)
+                if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
+            for (VkPipeline fallback : p->fallback_compute)
+                if (fallback) vkDestroyPipeline(dev.device, fallback, nullptr);
+            if (p->compute_pipeline) vkDestroyPipeline(dev.device, p->compute_pipeline, nullptr);
+            if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
+            if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
+        }
+    programs.clear();
+}
+bool rebuild() {
+    disk_reopen();
+    return true;
+}
+// (a recording thread's picks name programs of the device before)
+void thread_reset() {
+    picks.clear();
+    for (ProgFast& f : prog_fast) f = ProgFast{};
+}
+const DeviceLife life(kDeviceOrderPrograms, "the translated programs", release, rebuild, thread_reset);
+} // namespace
 
 } // namespace mkwvk
