@@ -482,6 +482,7 @@ bool make_device(VkPhysicalDevice gpu, DeviceFacts& d) {
         return false;
     }
     d.robust_buffers = robust_ok;
+    d.robust_offered = robust_choice::effective(true, robust2.robustBufferAccess2, f.features.robustBufferAccess);
     d.present_family = compute_family != UINT32_MAX ? compute_family : d.queue_family;
     if (d.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
@@ -504,6 +505,20 @@ void adopt_device(const DeviceFacts& d) {
     dlss_device_created();
     reflex_device_created();
     antilag_device_created();
+}
+
+GpuRobustness gpu_robustness(VkPhysicalDevice gpu) {
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> exts(n);
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, exts.data());
+    VkPhysicalDeviceRobustness2FeaturesEXT robust2{};
+    robust2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+    VkPhysicalDeviceFeatures2 f{};
+    f.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    if (has_extension(exts, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) f.pNext = &robust2;   // (make_device chains it the same way)
+    vkGetPhysicalDeviceFeatures2(gpu, &f);
+    return {robust2.robustBufferAccess2 != VK_FALSE, f.features.robustBufferAccess != VK_FALSE};
 }
 
 /// (hookshot) The UNORM format of an sRGB one (the same bytes, read and written as they are), else the format itself
@@ -846,7 +861,10 @@ void prepare_with_screen() {
                 dev.swap_resize.store((uint64_t)w << 32 | h, std::memory_order_release);
                 last_w = w, last_h = h;
             }
-            if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+            if (w && h) {
+                DeviceUse use;   // (each present held at the gate as the game's are: a device rebuild waits for it)
+                present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+            }
             if (finished || paint_stop.load()) break;
             Sleep(33);
         }
@@ -860,7 +878,10 @@ void prepare_with_screen() {
                 startup_fade_to((float)std::min(f, 1.0));
                 uint32_t w, h;
                 window_size(&w, &h);
-                if (w && h) present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+                if (w && h) {
+                    DeviceUse use;
+                    present_image(nullptr, dev.swap_extent.width, dev.swap_extent.height, nullptr);
+                }
                 if (f >= 1 || paint_stop.load()) break;
                 Sleep(8);
             }

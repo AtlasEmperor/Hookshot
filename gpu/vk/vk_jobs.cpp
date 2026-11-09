@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "vk_jobs.h"
+#include "vk_device_life.h"
 #include "vk_internal.h"
 #include "vk_draw.h"   // (ub_thread_off)
 
@@ -24,6 +25,7 @@ struct Entry {
 };
 std::deque<Entry> queue;
 std::atomic<int> pending{0};
+std::atomic<int> serial_pending{0};   // (jobs_push_serial's, queued or running)
 bool started = false;
 
 // (a job that throws: the game ended at once ("approach Malon, crash": an exception escaped a worker, KERNELBASE's RaiseException
@@ -66,6 +68,7 @@ void worker() {
             fn = std::move(queue.front().fn);
             queue.pop_front();
         }
+        device_thread_sync();
         run_guarded(fn);
         pending--;
         jobs_notify();
@@ -113,12 +116,15 @@ void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure
                     fn = std::move(sq.front());
                     sq.pop_front();
                 }
+                device_thread_sync();
                 run_guarded(fn);
+                serial_pending--;
                 jobs_notify();
             }
         }).detach();
         logf("vk: compute pipelines are built one at a time");
     }
+    serial_pending++;
     sq.push_back(std::move(fn));
     scv.notify_one();
 }
@@ -148,6 +154,10 @@ void jobs_wait(const std::atomic<bool>& flag) {
 }
 int jobs_pending() {
     return pending.load();
+}
+void jobs_wait_idle() {
+    std::unique_lock lk(mu);
+    done_cv.wait(lk, [] { return pending.load() == 0 && serial_pending.load() == 0; });
 }
 
 } // namespace mkwvk

@@ -250,6 +250,19 @@ void queue_flush_poll() {
 }
 } // namespace
 namespace {
+/// A wait on a timeline, no lock held, in slices: inside a call of the game's, a device rebuild is let in between two of them,
+/// and the wait goes on on the new device's timeline (wi names the semaphore by address: the new one is read at each slice)
+VkResult wait_semaphore_sliced(const VkSemaphoreWaitInfo& wi, uint64_t timeout_ns) {
+    constexpr uint64_t kSliceNs = 2000000;   // (2 ms: what a rebuild waits at most for this caller to let it in)
+    const auto t0 = std::chrono::steady_clock::now();
+    for (;;) {
+        const uint64_t waited = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+        const uint64_t left = timeout_ns > waited ? timeout_ns - waited : 0;
+        const VkResult res = vkWaitSemaphores(dev.device, &wi, std::min(left, kSliceNs));
+        if (res != VK_TIMEOUT || left <= kSliceNs) return res;
+        device_use_yield();
+    }
+}
 void wait_value(uint64_t v) {
     queue_flush_for(FR_VALUE);
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
@@ -257,6 +270,17 @@ void wait_value(uint64_t v) {
     wi.pSemaphores = &timeline;
     wi.pValues = &v;
     vkWaitSemaphores(dev.device, &wi, UINT64_MAX);
+}
+/// wait_value inside a call of the game's that holds no renderer lock: in slices, a device rebuild let in between two of them
+/// (the present's and the submits' waits hold sync_order_mu or end the game's frame: wait_value)
+void wait_value_sliced(uint64_t v) {
+    queue_flush_for(FR_VALUE);
+    VkSemaphoreWaitInfo wi{};
+    wi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &timeline;
+    wi.pValues = &v;
+    wait_semaphore_sliced(wi, UINT64_MAX);
 }
 } // namespace
 uint64_t vk_timeline_completed() { return timeline ? completed() : 0; }
@@ -1382,6 +1406,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     ub_limit = SIZE_MAX;
 }
 
+} // namespace
 /// The replay cannot go on: logged, the host's queued log written out (as hos_fatal does: a device lost's report is many
 /// lines, and the queue went with the process), written to stderr and the process ended (exit code 3). For a parallel
 /// replay's init command buffer that could not be ended: images already made and published lost their first layout
@@ -1393,6 +1418,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     std::fflush(stderr);
     std::_Exit(3);
 }
+namespace {
 std::recursive_mutex par_mu;
 
 /// A command buffer of the submission from h (its start, or where it stopped at a wait): on the replay thread alone
@@ -2137,7 +2163,7 @@ bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok) {
     wi.semaphoreCount = 1;
     wi.pSemaphores = &rec_timeline;
     wi.pValues = &seq;
-    *ok = vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
+    *ok = wait_semaphore_sliced(wi, timeout_ns) == VK_SUCCESS;
     return true;
 }
 uint64_t fence();
@@ -2195,7 +2221,7 @@ int wait(uint64_t f, uint64_t timeout_ns) {
     wi.pSemaphores = &timeline;
     wi.pValues = &f;
     queue_flush_for(FR_WAIT);
-    const VkResult res = vkWaitSemaphores(dev.device, &wi, timeout_ns);
+    const VkResult res = wait_semaphore_sliced(wi, timeout_ns);
     static int logged;
     if (res != VK_SUCCESS && timeout_ns > 1000000000ull && logged++ < 8)
         logf("vk: wait for fence %llu (done %llu, pushed %llu): %d", (unsigned long long)f,
@@ -2207,7 +2233,7 @@ void wait_queue_empty();
 bool replay_behind();
 void finish() {
     wait_queue_empty();
-    wait_value(pushed.load());
+    wait_value_sliced(pushed.load());
 }
 void wait_writebacks_reading(const void*, uint64_t) {}   // (nothing to write back: the GPU writes guest memory)
 /// (host: the CPU is about to read [gpu, gpu + size), nvnMemoryPoolInvalidateMappedRange / nvnBufferInvalidateMappedRange)
@@ -2305,7 +2331,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 int ok = 0;
                 if (!(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
                     if (unforced && replay_behind()) wait_queue_empty();   // (not recorded whole: as before)
-                    wait_value(v);
+                    wait_value_sliced(v);
                 }
                 w = true;
             }
@@ -4340,20 +4366,51 @@ int jitter_option(int id) {
     return (int)(d ? d : fsr3_inputs::jitter_size(axis));
 }
 
+/// (vk_device_rebuild.cpp, every call into the renderer held) every submission the game made recorded, the stopped ones forced past
+/// their waits, the held ones sent, and the device idle
+void replay_quiesce() {
+    if (async_on()) {
+        wait_queue_empty();
+    } else {
+        std::lock_guard lk(sync_order_mu);
+        drain(2);
+        update_blocked();
+    }
+    {
+        std::lock_guard lk(replay_mu);
+        if (rec_cur) finish_recording(q_values.load());
+    }
+    std::lock_guard qk(dev.present_mu);
+    device_wait_idle_locked();
+}
+
+namespace {
+/// A table call that uses the device, as one use of it (vk_device_life.h): a device rebuild waits for the calls in progress, and
+/// a call made while one runs waits for it
+template <auto F> struct Gated;
+template <class R, class... A, R (*F)(A...)>
+struct Gated<F> {
+    static R call(A... a) {
+        DeviceUse use;
+        return F(a...);
+    }
+};
+} // namespace
+
 void fill_replay_table(MkwVkRenderer& t) {
     t.stats = stats;
-    t.nvn_submit = submit;
-    t.nvn_submit_q = submit_q;
+    t.nvn_submit = Gated<submit>::call;
+    t.nvn_submit_q = Gated<submit_q>::call;
     t.nvn_fence_q = fence_q;
     t.nvn_fence = fence;
     t.nvn_pushed = get_pushed;
-    t.nvn_replayed = get_replayed;
-    t.nvn_wait = wait;
+    t.nvn_replayed = Gated<get_replayed>::call;
+    t.nvn_wait = Gated<wait>::call;
     t.wait_writebacks_reading = wait_writebacks_reading;
-    t.nvn_finish = finish;
-    t.nvn_present = present;
-    t.nvn_register_texture = register_texture_queued;
-    t.nvn_event_signal = event_signal_queued;
+    t.nvn_finish = Gated<finish>::call;
+    t.nvn_present = Gated<present>::call;
+    t.nvn_register_texture = Gated<register_texture_queued>::call;
+    t.nvn_event_signal = Gated<event_signal_queued>::call;
     t.option = [](int id) -> int {   // (3: the fixed path's scale in 1/10000, vk_menu.cpp; DLAA: full scale, vk_dlss.cpp)
         if (id == 11) return opts.stick_dead_zone;
         if (id == HOS_OPT_CHEAT_HEARTS) return menu_heart_protection();
@@ -4374,18 +4431,18 @@ void fill_replay_table(MkwVkRenderer& t) {
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;
     };
     t.option_set = menu_option_set;
-    t.jitter_sample = jitter_sample;
-    t.nvn_register_sampler = register_sampler_queued;
-    t.nvn_set_texture_pool_size = set_texture_pool_size;
-    t.nvn_texture_released = texture_released_of;
-    t.nvn_program_released = program_released_locked;
-    t.nvn_read_texels = read_texels;
-    t.nvn_write_texels = write_texels;
-    t.nvn_invalidate = invalidate;
-    t.nvn_pool_created = memory_pool_created;
-    t.guest_imported = memory_guest_imported;
-    t.nvn_vmap_changing = vmap_changing;
-    t.nvn_texture_created = texture_created_of;
+    t.jitter_sample = jitter_sample;   // (atomics the upscalers publish: no device use)
+    t.nvn_register_sampler = Gated<register_sampler_queued>::call;
+    t.nvn_set_texture_pool_size = Gated<set_texture_pool_size>::call;
+    t.nvn_texture_released = Gated<texture_released_of>::call;
+    t.nvn_program_released = Gated<program_released_locked>::call;
+    t.nvn_read_texels = Gated<read_texels>::call;
+    t.nvn_write_texels = Gated<write_texels>::call;
+    t.nvn_invalidate = Gated<invalidate>::call;
+    t.nvn_pool_created = Gated<memory_pool_created>::call;
+    t.guest_imported = Gated<memory_guest_imported>::call;
+    t.nvn_vmap_changing = Gated<vmap_changing>::call;
+    t.nvn_texture_created = Gated<texture_created_of>::call;
 }
 
 std::atomic<bool> par_active{false};

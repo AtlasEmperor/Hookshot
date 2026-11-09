@@ -20,5 +20,7 @@ void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure
 void jobs_wait(const std::atomic<bool>& flag);
 void jobs_notify();
 int jobs_pending();
+/// Waits until no job is queued or running, on the workers or the serial thread (a device rebuild, the calls held)
+void jobs_wait_idle();
 
 } // namespace mkwvk
