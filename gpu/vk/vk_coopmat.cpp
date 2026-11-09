@@ -343,6 +343,7 @@ void software_multiplies(const char* why) {
 } // namespace
 
 void coopmat_init() {
+    Shader::Backend::SPIRV::mma_software = false;   // (each device decides it: a rebuild on another GPU tests it again)
     // (amd-fix) NaN guard on float colour outputs (mma_layout.h frag_nan_guard), on every card since v2.0.6 as NX2navi's patch 0027
     // has it: the neon plants were reported on NVIDIA cards too, and one NaN texel spreads through bloom and blur
     Shader::Backend::SPIRV::frag_nan_guard = !std::getenv("RX_VK_NO_NAN_GUARD");
