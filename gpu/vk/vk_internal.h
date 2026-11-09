@@ -278,6 +278,9 @@ void image_compact_ignore(size_t i);
 /// The pass ended (its old images destroyed by the caller, nothing of the pool freed since it began). False: that was
 /// the last one; then *freed_bytes and *freed_blocks say what went back to the driver in all
 bool image_compact_pass_end(uint64_t* freed_bytes, uint32_t* freed_blocks);
+/// The compaction under way ended where it is, its open pass with it (the caller destroyed that pass's old images, and the
+/// GPU is done with its copies). False: none was under way
+bool image_compact_end();
 void destroy_image(VkImage image, VmaAllocation allocation);
 /// What an allocation really takes (VkMemoryRequirements.size: padding, alignment, the driver's metadata), 0 for none
 uint64_t allocation_size(VmaAllocation allocation);

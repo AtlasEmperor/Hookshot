@@ -5,6 +5,7 @@
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #include "vk_internal.h"
+#include "vk_device_life.h"
 #include <vk_mem_alloc.h>
 #include <algorithm>
 #include <atomic>
@@ -183,6 +184,13 @@ bool image_compact_pass_end(uint64_t* freed_bytes, uint32_t* freed_blocks) {
     if (vmaEndDefragmentationPass(vma, compact_ctx, &compact_pass) == VK_INCOMPLETE) return true;
     return compact_over(freed_bytes, freed_blocks);
 }
+bool image_compact_end() {
+    if (!compact_ctx) return false;
+    if (compact_in_pass) vmaEndDefragmentationPass(vma, compact_ctx, &compact_pass);
+    compact_in_pass = false;
+    compact_over(nullptr, nullptr);
+    return true;
+}
 
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated, bool target, bool textures) {
     VmaAllocationCreateInfo ai{};
@@ -352,5 +360,21 @@ bool system_heap_usage(uint64_t* used, uint64_t* budget) {
     *used = u, *budget = t;
     return dev.memory_budget && t != 0;
 }
+
+namespace {
+// (a device rebuild: every other module's images and buffers are destroyed before this runs, the allocator last)
+void release() {
+    image_compact_end();   // (vk_texture.cpp's release ends one under way first; nothing is left to move here)
+    for (VmaPool* pool : {&image_pool, &target_image_pool, &texture_pool}) {
+        if (*pool) vmaDestroyPool(vma, *pool);
+        *pool = VK_NULL_HANDLE;
+    }
+    image_pool_tried = target_pool_tried = texture_pool_tried = false;
+    if (vma) vmaDestroyAllocator(vma);
+    vma = VK_NULL_HANDLE;
+}
+bool rebuild() { return vma_init(instance_proc()); }
+const DeviceLife life(kDeviceOrderAllocator, "the memory allocator", release, rebuild, nullptr);
+} // namespace
 
 } // namespace mkwvk
