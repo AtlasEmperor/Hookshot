@@ -4395,6 +4395,11 @@ struct Gated<F> {
         return F(a...);
     }
 };
+/// The game's present: the end of its frame, where a device rebuild waiting for one holds the game (device_frame_end)
+void present_frame(const nvn_tex* t, const int crop[4]) {
+    present(t, crop);
+    device_frame_end();
+}
 } // namespace
 
 void fill_replay_table(MkwVkRenderer& t) {
@@ -4408,7 +4413,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_wait = Gated<wait>::call;
     t.wait_writebacks_reading = wait_writebacks_reading;
     t.nvn_finish = Gated<finish>::call;
-    t.nvn_present = Gated<present>::call;
+    t.nvn_present = Gated<present_frame>::call;
     t.nvn_register_texture = Gated<register_texture_queued>::call;
     t.nvn_event_signal = Gated<event_signal_queued>::call;
     t.option = [](int id) -> int {   // (3: the fixed path's scale in 1/10000, vk_menu.cpp; DLAA: full scale, vk_dlss.cpp)

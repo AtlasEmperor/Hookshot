@@ -34,6 +34,7 @@ std::atomic<bool> closed{false};
 std::mutex gate_mu;
 std::condition_variable gate_cv;
 thread_local int use_depth = 0;
+std::atomic<bool> frame_end_wanted{false};   // (set and cleared under gate_mu: a rebuild waits for device_frame_end)
 
 void leave() {
     if (users.fetch_sub(1) == 1 && closed.load()) {
@@ -52,6 +53,21 @@ void enter() {
 }
 
 } // namespace
+
+void device_gate_close_at_frame_end(std::chrono::steady_clock::time_point by) {
+    std::unique_lock lk(gate_mu);
+    frame_end_wanted = true;
+    gate_cv.wait_until(lk, by, [] { return closed.load(); });
+    frame_end_wanted = false;
+    closed.store(true);
+}
+void device_frame_end() {
+    if (!frame_end_wanted.load()) return;
+    std::lock_guard lk(gate_mu);
+    if (!frame_end_wanted.exchange(false)) return;
+    closed.store(true);
+    gate_cv.notify_all();
+}
 
 bool device_gate_close(std::chrono::steady_clock::time_point deadline) {
     closed.store(true);

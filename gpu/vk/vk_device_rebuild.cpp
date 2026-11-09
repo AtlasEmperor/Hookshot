@@ -23,6 +23,9 @@ double ms_between(Clock::time_point a, Clock::time_point b) { return std::chrono
 // gate, lets go then, and the rebuild is tried again kRetry later)
 constexpr auto kGateDeadline = std::chrono::seconds(2);
 constexpr auto kRetry = std::chrono::milliseconds(500);
+// (how long the rebuild waits for the game's next frame to end before it holds the game anyway: a loading screen that shows
+// no frame)
+constexpr auto kFrameEndWait = std::chrono::milliseconds(500);
 // (a change of the rows is acted on once they rest this long: a player stepping through the GPUs makes one device, not each)
 constexpr auto kDebounce = std::chrono::milliseconds(300);
 // (when the cost of the programs made again after a rebuild is logged)
@@ -73,8 +76,10 @@ bool bring_up(const DeviceFacts& d) {
 /// to be tried again
 bool rebuild_once(int gpu_in_use, int robust_in_use) {
     const Clock::time_point t0 = Clock::now();
+    device_gate_close_at_frame_end(t0 + kFrameEndWait);
     memory_imports_give_back();
-    if (!device_gate_close(t0 + kGateDeadline)) {
+    const Clock::time_point t_held = Clock::now();   // (the game held from here)
+    if (!device_gate_close(t_held + kGateDeadline)) {
         logf("vk: device rebuild: the renderer was still in use after %lld ms: tried again", (long long)
              std::chrono::duration_cast<std::chrono::milliseconds>(kGateDeadline).count());
         return false;
@@ -135,12 +140,13 @@ bool rebuild_once(int gpu_in_use, int robust_in_use) {
     const Clock::time_point t_up = Clock::now();
     device_gate_open();
     out.ok = ok, out.rebuilt = true;
-    out.pause_ms = ms_between(t0, t_up);
-    logf("vk: device rebuild (%s, robust buffers %s): %s; %s, Vulkan %u.%u; gate %.1f ms, work done %.1f ms, made %.1f ms, given up "
-         "%.1f ms, set up %.1f ms: %.1f ms in all", change == device_change::Change::Gpu ? "another GPU" : "the same GPU",
-         dev.robust_buffers ? "on" : "off", ok ? "done" : "failed, the device before set up again", dev.props.deviceName,
-         VK_API_VERSION_MAJOR(dev.props.apiVersion), VK_API_VERSION_MINOR(dev.props.apiVersion), ms_between(t0, t_gate),
-         ms_between(t_gate, t_quiet), ms_between(t_quiet, t_made), ms_between(t_made, t_down), ms_between(t_down, t_up), out.pause_ms);
+    out.pause_ms = ms_between(t_held, t_up);
+    logf("vk: device rebuild (%s, robust buffers %s): %s; %s, Vulkan %u.%u; frame end %.1f ms, then the game held: gate %.1f ms, "
+         "work done %.1f ms, made %.1f ms, given up %.1f ms, set up %.1f ms: %.1f ms in all",
+         change == device_change::Change::Gpu ? "another GPU" : "the same GPU", dev.robust_buffers ? "on" : "off",
+         ok ? "done" : "failed, the device before set up again", dev.props.deviceName, VK_API_VERSION_MAJOR(dev.props.apiVersion),
+         VK_API_VERSION_MINOR(dev.props.apiVersion), ms_between(t0, t_held), ms_between(t_held, t_gate), ms_between(t_gate, t_quiet),
+         ms_between(t_quiet, t_made), ms_between(t_made, t_down), ms_between(t_down, t_up), out.pause_ms);
     publish(out);
     return true;
 }
