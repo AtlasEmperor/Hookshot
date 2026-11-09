@@ -32,6 +32,7 @@
 
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
+#include "vk_device_life.h"
 #include "vk_paths.h"
 #include "vk_draw.h"
 #include "vk_menu.h"          // (opts.anisotropy: the Anisotropic filtering row; resolution_scale)
@@ -618,9 +619,9 @@ VkFormat vertex_format(int f) {
 VkFormat supported_vertex_format(VkFormat f) {
     static std::mutex mu;   // (pipelines are built on workers)
     std::lock_guard lk(mu);
-    static std::unordered_map<int, VkFormat> known;
-    auto it = known.find((int)f);
-    if (it != known.end()) return it->second;
+    static DeviceLocal<std::unordered_map<int, VkFormat>> known;   // (the device's: under mu)
+    auto it = known->find((int)f);
+    if (it != known->end()) return it->second;
     VkFormatProperties p{};
     vkGetPhysicalDeviceFormatProperties(dev.physical, f, &p);
     VkFormat out = f;
@@ -642,7 +643,7 @@ VkFormat supported_vertex_format(VkFormat f) {
         default: break;
         }
     }
-    known[(int)f] = out;
+    known.get()[(int)f] = out;
     return out;
 }
 
@@ -758,6 +759,9 @@ struct PlayCache {
 };
 std::atomic<PlayCache*> play_cache{nullptr};   // (null before play, and without pipelineCreationCacheControl)
 uint32_t play_seq = 0;                         // (the highest play file number read or written)
+std::mutex play_save_mu;                       // (a save's thread and the window's close, pipeline_cache_close)
+std::vector<PlayCache*> play_unsaved;          // (generations taken away whose file could not be written: tried again)
+bool play_resume = false;                      // (a device rebuild during play: play begins again once pcache is made)
 constexpr size_t kPlayFilesKept = 16;
 std::string play_path(uint32_t n) {
     return pcache_dir + "mkw_vk_pipelines_play_" + std::to_string(n) + ".bin";
@@ -832,18 +836,16 @@ void play_cache_begin() {
 /// (pipeline_cache_save's thread, or the window's close) play's generation taken away once nothing is being made with it, a new one
 /// in its place, and written alone. One not written is kept and tried again at the next save
 void play_cache_save() {
-    static std::mutex mu;   // (a save's thread and the window's close, pipeline_cache_close)
-    std::lock_guard lk(mu);
-    static std::vector<PlayCache*> unsaved;
+    std::lock_guard lk(play_save_mu);
     if (PlayCache* g = play_cache.load(); g && g->built.load()) {
-        unsaved.reserve(unsaved.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
+        play_unsaved.reserve(play_unsaved.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
         if (PlayCache* next = play_cache_make()) {
             play_cache.store(next);
             while (g->users.load()) Sleep(1);
-            unsaved.push_back(g);
+            play_unsaved.push_back(g);
         }
     }
-    for (auto it = unsaved.begin(); it != unsaved.end();) {
+    for (auto it = play_unsaved.begin(); it != play_unsaved.end();) {
         PlayCache* old = *it;
         if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1))) {
             play_seq++;
@@ -853,11 +855,23 @@ void play_cache_save() {
                  (long long)old->from_start.load());
             vkDestroyPipelineCache(dev.device, old->cache, nullptr);
             old->cache = VK_NULL_HANDLE;
-            it = unsaved.erase(it);
+            it = play_unsaved.erase(it);
         } else {
             ++it;
         }
     }
+}
+/// (a device rebuild, after its forced save) play's caches let go with the device: the generation, and those whose file could
+/// not be written, lost. play_resume says whether play was under way
+void play_cache_drop() {
+    std::lock_guard lk(play_save_mu);
+    if (!play_unsaved.empty())
+        logf("vk: device rebuild: %zu play cache generations lost (their files could not be written)", play_unsaved.size());
+    for (PlayCache* old : play_unsaved) vkDestroyPipelineCache(dev.device, old->cache, nullptr), old->cache = VK_NULL_HANDLE;
+    play_unsaved.clear();
+    PlayCache* g = play_cache.exchange(nullptr);
+    play_resume = g != nullptr;
+    if (g) vkDestroyPipelineCache(dev.device, g->cache, nullptr), g->cache = VK_NULL_HANDLE;
 }
 /// Before play, a pipeline made with pcache. In play pcache is left as it was read: asked of it first, a pipeline new to it would
 /// grow it all the same (NVIDIA copies in what it takes from its own cache). Asked without compiling
@@ -921,6 +935,7 @@ void pcache_init() {
     // (what it holds as read, the play files too: a save of data that size has nothing to add to the files)
     size_t held = 0;
     if (pcache && vkGetPipelineCacheData(dev.device, pcache, &held, nullptr) == VK_SUCCESS) pcache_saved_size = held;
+    if (pcache && play_resume) play_resume = false, play_cache_begin();   // (made again after a device rebuild during play)
 }
 
 struct Targets {
@@ -1143,6 +1158,7 @@ uint64_t program_wm_sig(const Program& p) {
 // RX_RELEASE=1 (nx2/build.py) has it on. The notes are written in every build ----
 std::mutex note_mu;
 FILE* note_file = nullptr;
+uint64_t note_stamp = 0;   // (the program cache stamp note_file was opened for)
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
 std::string pipe_notes_path() {
     char exe[MAX_PATH];
@@ -1219,8 +1235,13 @@ uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, Vk
 /// has just read them (precompile_run, before play; a note it left out as not sane is written again when its pipeline is met,
 /// and the next read takes that one). Without them the records are read here in order. The first new pipeline in play opened
 /// the file and read its keys back with a seek and an 8-byte read each: 142 ms for 1150 notes on the thread replaying
+/// The program cache stamp the notes are kept for: the device's translation (a rebuild on another GPU may change it)
+uint64_t notes_stamp() {
+    static DeviceLatch<uint64_t> stamp;
+    return stamp.get(program_cache_stamp);
+}
 void notes_open_locked(const std::vector<std::unique_ptr<PipeNote>>* known) {
-    static const uint64_t stamp = program_cache_stamp();
+    const uint64_t stamp = note_stamp = notes_stamp();
     const std::string path = pipe_notes_path();
     uint64_t head[2] = {0, 0};
     if (FILE* f = fopen(path.c_str(), "rb")) {
@@ -1255,6 +1276,7 @@ void pipeline_note(uint64_t key, const Program& p, const NvnState& s, const Targ
     for (int i = 0; i < 8; i++) rec->color_format[i] = (uint32_t)at.color_format[i];
     rec->s = s;
     std::lock_guard lk(note_mu);
+    if (note_file && note_stamp != notes_stamp()) fclose(note_file), note_file = nullptr, noted.clear();   // (made again for this one)
     if (!note_file) notes_open_locked(nullptr);
     if (note_file && noted.insert(key).second) fwrite(rec.get(), sizeof(PipeNote), 1, note_file), fflush(note_file);
 }
@@ -1666,16 +1688,19 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
 // for the worker's full build, as without libraries, and a worker builds the library after it, for the program's next pipeline.
 // Needs pipelineCreationCacheControl. RX_VK_GPL_SYNC (set to anything): compiled in the draw, as before) ----
 bool gpl_wanted() {
-    static const bool on = dev.graphics_pipeline_library && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c &&
-                           getenv("RX_VK_GPL") != nullptr;   // (off until the driver step is safe: linked cold, the libraries stall the draw)
-    return on;
+    static DeviceLatch<bool> on;
+    return on.get([] {
+        return dev.graphics_pipeline_library && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c &&
+               getenv("RX_VK_GPL") != nullptr;   // (off until the driver step is safe: linked cold, the libraries stall the draw)
+    });
 }
 bool gpl_ask_only() {
-    static const bool on = dev.vk13.pipelineCreationCacheControl && !getenv("RX_VK_GPL_SYNC");
-    return on;
+    static DeviceLatch<bool> on;
+    return on.get([] { return dev.vk13.pipelineCreationCacheControl && !getenv("RX_VK_GPL_SYNC"); });
 }
 std::mutex gpl_mu;
 std::unordered_map<uint64_t, VkPipeline> gpl_libs;   // (null: cold and a worker's to build, or it failed. Not asked for again)
+std::vector<VkPipeline> gpl_linked;   // (linked pipelines a full build replaced: draws recorded with them may be in flight)
 /// cold_key: set to the library's key when the driver would have had to compile it (the caller has a worker build it: gpl_build_cold)
 VkPipeline gpl_part(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo, int part, uint64_t key,
                     uint64_t* cold_key) {
@@ -1841,12 +1866,12 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
         return e;
     };
     const uint64_t key = pipeline_key(p, s, at, topo);
-    static thread_local std::unordered_map<uint64_t, PipeEntry*> mine;   // (entries live as long as the cache)
-    if (auto m = mine.find(key); m != mine.end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
+    static thread_local DeviceLocal<std::unordered_map<uint64_t, PipeEntry*>> mine;   // (entries live as long as the cache)
+    if (auto m = mine->find(key); m != mine->end()) return FINE_X(FC_PIPE_MAP, 1), remember(m->second);
     PROF_EXACT();   // (new to this thread, or new: rare, and a pipeline made can take milliseconds)
     ParLock lk;
     auto it = pipelines.find(key);
-    if (it != pipelines.end()) return remember(mine[key] = it->second.get());
+    if (it != pipelines.end()) return remember(mine.get()[key] = it->second.get());
     pcache_init();
     PipeEntry* e = pipelines.emplace(key, std::make_unique<PipeEntry>()).first->second.get();
     pipeline_note(key, p, s, at, topo, color_types);
@@ -1881,7 +1906,12 @@ PipeEntry* graphics_pipeline(const Program& p, const NvnState& s, const Targets&
     job->e = e, job->p = &p, job->s = s, job->at = at, job->topo = topo, job->cold[0] = cold[0], job->cold[1] = cold[1];
     jobs_push([job] {
         // (over a linked one, which is left alone: draws recorded with it may still be on their way)
-        if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) job->e->pipeline = full;
+        if (const VkPipeline full = build_graphics(*job->p, job->s, job->at, job->topo)) {
+            if (const VkPipeline linked = job->e->pipeline.exchange(full)) {
+                std::lock_guard lk(gpl_mu);
+                gpl_linked.push_back(linked);
+            }
+        }
         job->e->ready.store(true, std::memory_order_release);
         // (the cold libraries after it and behind what is queued, with no flag: the draw waits for the pipeline above, and
         // jobs_wait runs one job)
@@ -2078,11 +2108,12 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         // tables) hung the GPU when the driver's optimizer built them: a device lost one to four minutes into Kokiri, each time with
         // another of them first (RX 6600, issues 461 and 484); never in runs where they were built without it. They are built
         // without it on AMD. RX_VK_MESH_OPT=1: with it, as the others)
-        static const bool amd = [] {
+        static DeviceLatch<bool> amd_latch;
+        const bool amd = amd_latch.get([] {
             VkPhysicalDeviceProperties pr{};
             vkGetPhysicalDeviceProperties(dev.physical, &pr);
             return pr.vendorID == 0x1002;
-        }();
+        });
         static const bool mesh_opt = getenv("RX_VK_MESH_OPT") != nullptr;
         if (amd && !mesh_opt) {
             bool mesh = false;
@@ -2194,9 +2225,9 @@ VkSampler sampler_for(int id, bool compare) {
     static const bool on = !getenv("RX_VK_SAMPLER_CACHE") || atoi(getenv("RX_VK_SAMPLER_CACHE")) != 0;
     if (!on || id < 0 || id >= 4096) return sampler_make(id, compare);
     struct Entry { uint64_t gen; VkSampler s; };
-    static thread_local Entry table[2][4096];   // (gen 0: never filled; the generation starts at 1)
+    static thread_local DeviceLocal<std::array<std::array<Entry, 4096>, 2>> table;   // (gen 0: never filled; the generation starts at 1)
     const uint64_t gen = sampler_registrations_generation();   // (read first: a registration after it makes the next call miss)
-    Entry& e = table[compare ? 1 : 0][id];
+    Entry& e = table.get()[compare ? 1 : 0][id];
     if (e.gen == gen) return e.s;
     const VkSampler made = sampler_make(id, compare);
     if (made) e = {gen, made};   // (a failed creation is retryable without a new registration)
@@ -2227,12 +2258,12 @@ VkSampler sampler_make(int id, bool compare) {
         std::memcpy(&w, b + i, std::min<size_t>(8, sizeof p - i));
         key = mix(key, w);
     }
-    static thread_local std::unordered_map<uint64_t, VkSampler> mine;   // (samplers are never destroyed)
-    if (auto m = mine.find(key); m != mine.end()) return m->second;
+    static thread_local DeviceLocal<std::unordered_map<uint64_t, VkSampler>> mine;   // (samplers live as long as the device)
+    if (auto m = mine->find(key); m != mine->end()) return m->second;
     ParLock lk;
     auto it = samplers.find(key);
     if (it != samplers.end()) {
-        try { mine.emplace(key, it->second); } catch (const std::exception&) {}   // (the global cache still owns it)
+        try { mine->emplace(key, it->second); } catch (const std::exception&) {}   // (the global cache still owns it)
         return it->second;
     }
     // Keep valid cache hits ahead of failure tracking. A bad key gets at most one failed attempt per present;
@@ -2928,11 +2959,12 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // finds its light probes this way, up to ~130 MB past the pointer: the probes past the binding read 0 and the
                 // fog took an overbright constant from them (the white haze, zones overexposed or too dark). Written ones keep
                 // 1 MB. RX_VK_BARE_READ_MB=<MB> caps it (1: as before)
-                static const uint64_t bare_read = [] {
+                static DeviceLatch<uint64_t> bare_read_latch;   // (the device's storage buffer range)
+                const uint64_t bare_read = bare_read_latch.get([] {
                     const uint64_t reach = std::min<uint64_t>(dev.props.limits.maxStorageBufferRange, 1ull << 30);
                     const uint64_t cap = getenv("RX_VK_BARE_READ_MB") ? (uint64_t)atoll(getenv("RX_VK_BARE_READ_MB")) << 20 : reach;
                     return std::max<uint64_t>(1ull << 20, std::min(cap, reach - std::min<uint64_t>(reach, 64ull << 10)));
-                }();
+                });
                 if (d.count > 1 && !size && addr && !(addr & 3) && host->gpu_guest(addr))
                     if (const uint64_t end = gpu_pool_end(addr); end > addr)
                         size = std::min<uint64_t>(end - addr, d.is_written ? (1ull << 20) : bare_read) & ~3ull, bare = true;
@@ -3440,6 +3472,7 @@ std::atomic<uint32_t> checkpoint_n{0};
 // (VK_AMD_buffer_marker, where the NV checkpoints are missing: marker i's sequence number goes to word 2i when the GPU
 // reaches it and to word 2i + 1 once all the work before it is done. Host memory, not VRAM: a GPU reset loses VRAM.)
 VkBuffer marker_buffer = VK_NULL_HANDLE;
+VkDeviceMemory marker_memory = VK_NULL_HANDLE;
 volatile uint32_t* marker_words = nullptr;
 
 // (RX_VK_CHECKPOINTS=ext: the extension on, no markers: which of the two keeps the device from being lost)
@@ -3482,7 +3515,8 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, ui
     const float one = 1.0f;
     std::memcpy(data + Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, &one, 4);
     {   // (guest memory's page table, for the pointers compute, task and mesh stages follow)
-        static const uint64_t pages = memory_guest_pages();
+        static DeviceLatch<uint64_t> pages_latch;   // (the device's page table)
+        const uint64_t pages = pages_latch.get(memory_guest_pages);
         std::memcpy(data + Shader::Backend::SPIRV::GUEST_PAGES_PUSH_OFFSET, &pages, 8);
     }
     if (p.fallback_task) {
@@ -3579,6 +3613,7 @@ void buffer_markers_init() {
     }
     std::memset(words, 0, size);
     marker_buffer = buffer;
+    marker_memory = memory;
     marker_words = (volatile uint32_t*)words;
     logf("vk: RX_VK_CHECKPOINTS: VK_AMD_buffer_marker, a marker before each draw and dispatch (memory type %u)", type);
 }
@@ -4034,7 +4069,10 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     {   // (hookshot) A colour pass after a depth pass tests EQUAL against what another program wrote. Intel's compiler does not give two
         // programs the same position to the last bit, and the ground came out in holes: the sky through them, a white forest.
         // A small margin towards the camera instead. RX_VK_EQ_BIAS=<units>, 0: as the game asks
-        static const float eq_bias = getenv("RX_VK_EQ_BIAS") ? (float)atof(getenv("RX_VK_EQ_BIAS")) : dev.props.vendorID == 0x8086 ? 64.0f : 0.0f;
+        static DeviceLatch<float> eq_bias_latch;
+        const float eq_bias = eq_bias_latch.get([] {
+            return getenv("RX_VK_EQ_BIAS") ? (float)atof(getenv("RX_VK_EQ_BIAS")) : dev.props.vendorID == 0x8086 ? 64.0f : 0.0f;
+        });
         if (eq_bias > 0 && d.dt && !d.dw && d.dop == VK_COMPARE_OP_EQUAL) {
             d.dop = VK_COMPARE_OP_LESS_OR_EQUAL;
             d.bias_en = VK_TRUE;
@@ -5576,7 +5614,8 @@ uint64_t mesh_args_address = 0;   // (its device address: a task program reads i
 // {count, 0, 0, first}: as they lay, every foliage draw had no workgroups in y and z and drew nothing. Entry 0 stays {0, 1, 1, 0}: the
 // first of draws that have none
 bool mesh_args_ready() {
-    static const bool ok = [] {
+    static DeviceLatch<bool> ok;   // (each device's ring: a rebuild destroys it, release)
+    return ok.get([] {
         void* mapped = nullptr;
         if (!create_buffer((uint64_t)kMeshArgs * 16,
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true,
@@ -5599,8 +5638,7 @@ bool mesh_args_ready() {
         mesh_args_address = vkGetBufferDeviceAddress(dev.device, &da);
         if (!mesh_args_address) return discard();
         return true;
-    }();
-    return ok;
+    });
 }
 uint32_t mesh_args_take(uint32_t n) {   // (n entries of the ring, never entry 0; n below kMeshArgs: % 0 otherwise)
     static std::atomic<uint32_t> next{1};
@@ -5636,6 +5674,12 @@ struct FallbackBuffers {
 };
 // (grown pairs stay: a command buffer recorded before the growth may still read them)
 TLS_OBJECT(fallback_buffers, std::vector<FallbackBuffers>)
+std::mutex fallback_made_mu;
+std::vector<std::pair<VkBuffer, VmaAllocation>> fallback_made;   // (every thread's buffers: a device rebuild gives them back)
+void fallback_note(VkBuffer buffer, VmaAllocation memory) {
+    std::lock_guard lk(fallback_made_mu);
+    fallback_made.emplace_back(buffer, memory);
+}
 thread_local VkBuffer fallback_draw_records = VK_NULL_HANDLE;   // (the last fallback_record's: its header is the draw's command)
 
 uint32_t fallback_task_groups(const Program& p) {
@@ -5693,6 +5737,8 @@ bool fallback_buffers_of(const Program& p, FallbackBuffers*& out) {
             return false;
         }
     }
+    fallback_note(f.records, f.records_mem);
+    if (f.payload) fallback_note(f.payload, f.payload_mem);
     sets.push_back(f);
     out = &sets.back();
     return true;
@@ -5771,8 +5817,10 @@ bool fallback_pipelines_ready(Program& p) {
             job->compute_state.store(2, std::memory_order_release);
         };
         // (issue 496: one at a time on Intel, as compute programs are. RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
-        static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
-                                                                 : dev.props.vendorID == 0x8086;
+        static DeviceLatch<bool> serial_latch;
+        const bool serial = serial_latch.get([] {
+            return getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1' : dev.props.vendorID == 0x8086;
+        });
         auto failed = [job]() noexcept {
             // fallback_compute is published only after the whole build succeeds; empty means failed.
             job->compute_state.store(2, std::memory_order_release);
@@ -5984,12 +6032,27 @@ int mask_radius_env() {
     static const int r = std::clamp(getenv("RX_VK_MASK_RADIUS") ? atoi(getenv("RX_VK_MASK_RADIUS")) : 0, 0, 4);
     return r;
 }
+/// mask_stabilize's pass, the mask's views and the history, made at their first use on each device (a rebuild destroys them:
+/// release)
+struct MaskBlend {
+    VkDescriptorSetLayout set = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipe = VK_NULL_HANDLE;
+    bool tried = false;
+    std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
+    VkImage hist[2] = {};
+    VmaAllocation hist_mem[2] = {};
+    VkImageView hist_view[2] = {};
+    uint32_t hist_w = 0, hist_h = 0, cur = 0;
+    uint64_t hist_frame = 0;
+};
+MaskBlend mask_blend;
 void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer, float weight) {
     if (!tex || !tex->image || tex->format != VK_FORMAT_R8G8B8A8_UNORM || !(tex->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return;
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) return;
-    static VkPipeline pipe = VK_NULL_HANDLE;
-    static VkPipelineLayout layout = VK_NULL_HANDLE;
-    static bool tried = false;
+    VkPipeline& pipe = mask_blend.pipe;
+    VkPipelineLayout& layout = mask_blend.layout;
+    bool& tried = mask_blend.tried;
     if (!tried) {
         tried = true;
         VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -5998,7 +6061,7 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
         li.bindingCount = 3, li.pBindings = b;
-        VkDescriptorSetLayout set{};
+        VkDescriptorSetLayout& set = mask_blend.set;
         vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set);
         const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 24};
         VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -6018,19 +6081,18 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     if (!pipe) return;
     const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
     // (the mask's own storage view at that level and layer, made once a texture and level)
-    static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
-    VkImageView& mv = views[{tex->image, level, layer}];
+    VkImageView& mv = mask_blend.views[{tex->image, level, layer}];
     if (!mv) {
         VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vc.image = tex->image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = VK_FORMAT_R8G8B8A8_UNORM;
         vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1};
         if (vkCreateImageView(dev.device, &vc, nullptr, &mv) != VK_SUCCESS) { mv = VK_NULL_HANDLE; return; }
     }
-    static VkImage hist[2] = {};
-    static VmaAllocation hist_mem[2] = {};
-    static VkImageView hist_view[2] = {};
-    static uint32_t hist_w = 0, hist_h = 0, cur = 0;
-    static uint64_t hist_frame = 0;
+    VkImage* const hist = mask_blend.hist;
+    VmaAllocation* const hist_mem = mask_blend.hist_mem;
+    VkImageView* const hist_view = mask_blend.hist_view;
+    uint32_t &hist_w = mask_blend.hist_w, &hist_h = mask_blend.hist_h, &cur = mask_blend.cur;
+    uint64_t& hist_frame = mask_blend.hist_frame;
     if (hist_w != w || hist_h != h) {
         for (int i = 0; i < 2; i++) {
             VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -6782,6 +6844,28 @@ struct DispatchClock {   // (a dispatch over 2 ms: logged, with where its time w
     }
 };
 
+/// A helper compute pipeline of this file's upscalers, made at its first use on each device (a rebuild destroys it: release)
+struct HelperPipeline {
+    VkDescriptorSetLayout set = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipe = VK_NULL_HANDLE;
+    VkSampler linear = VK_NULL_HANDLE;
+    bool tried = false, made = false;
+};
+HelperPipeline movie_helper;   // (movie_upscale's)
+HelperPipeline typed_helper;   // (typed_upscale's)
+/// typed_upscale's history images: the last output of each kind, and the ones a new size replaced, given back later
+struct TaauHistory {
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation memory = nullptr;
+    VkImageView view = VK_NULL_HANDLE;
+    uint32_t width = 0, height = 0;
+    uint64_t frame = 0;
+};
+TaauHistory taau_histories[2];
+struct TaauOldHistory { VkImage image; VmaAllocation mem; VkImageView view; uint64_t frame; };
+std::vector<TaauOldHistory> taau_old_histories;
+
 /// (hookshot) OoT's neural upscaler (about 13 tensor-core compute passes a frame over storage-buffer feature maps,
 /// 1920x1080 in, 2560x1440 out) does not translate: its matrix multiplies and a few other native opcodes have no
 /// lowering. Its last pass reads the network's result, the input colour and a noise texture and writes the output
@@ -6801,16 +6885,16 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
     const VkImageView in = texture_view_of(in_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, VK_FORMAT_UNDEFINED, &a, &la);
     const VkImageView to = texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, VK_FORMAT_R8G8B8A8_UNORM, &b, &lb);
     if (!in || !to || !b) return false;
-    static VkPipeline pipe = VK_NULL_HANDLE;
-    static VkPipelineLayout layout = VK_NULL_HANDLE;
-    static VkSampler linear = VK_NULL_HANDLE;
-    static const bool made = [] {
+    VkPipeline& pipe = movie_helper.pipe;
+    VkPipelineLayout& layout = movie_helper.layout;
+    VkSampler& linear = movie_helper.linear;
+    if (!movie_helper.tried) movie_helper.tried = true, movie_helper.made = [&] {
         VkDescriptorSetLayoutBinding bind[2] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
                                                 {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
         li.bindingCount = 2, li.pBindings = bind;
-        VkDescriptorSetLayout set{};
+        VkDescriptorSetLayout& set = movie_helper.set;
         vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set);
         const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
         VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -6832,7 +6916,7 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
         vkCreateSampler(dev.device, &si, nullptr, &linear);
         return pipe != VK_NULL_HANDLE;
     }();
-    if (!made) return false;
+    if (!movie_helper.made) return false;
     const VkDescriptorImageInfo in_info{linear, in, VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorImageInfo out_info{VK_NULL_HANDLE, to, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -7024,19 +7108,18 @@ bool taau_key(uint64_t key) {
 static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageView output_view,
                           Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal) {
     if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR || !input_view || !output_view || !out) return false;
-    static VkPipeline pipe = VK_NULL_HANDLE;
-    static VkPipelineLayout layout = VK_NULL_HANDLE;
-    static VkSampler linear = VK_NULL_HANDLE;
-    static bool tried = false;
-    if (!tried) {
-        tried = true;
+    VkPipeline& pipe = typed_helper.pipe;
+    VkPipelineLayout& layout = typed_helper.layout;
+    VkSampler& linear = typed_helper.linear;
+    if (!typed_helper.tried) {
+        typed_helper.tried = true;
         VkDescriptorSetLayoutBinding b[3] = {{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
                                              {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
                                              {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
         li.bindingCount = 3, li.pBindings = b;
-        VkDescriptorSetLayout set{};
+        VkDescriptorSetLayout& set = typed_helper.set;
         vkCreateDescriptorSetLayout(dev.device, &li, nullptr, &set);
         const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12};
         VkPipelineLayoutCreateInfo pi{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -7063,15 +7146,7 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     uint32_t size[3] = {std::max(1u, out->width >> level), std::max(1u, out->height >> level), 0};
     // (the stand-in's last output, which bounds this one's pixels: shaders/taau_upscale.comp. Made again at a new size,
     // the first frame unbounded; RX_VK_TAAU_NO_CLAMP=1: never bounded)
-    struct History {
-        VkImage image = VK_NULL_HANDLE;
-        VmaAllocation memory = nullptr;
-        VkImageView view = VK_NULL_HANDLE;
-        uint32_t width = 0, height = 0;
-        uint64_t frame = 0;
-    };
-    static History histories[2];
-    History& history = histories[temporal ? 0 : 1];
+    TaauHistory& history = taau_histories[temporal ? 0 : 1];
     auto& hist = history.image;
     auto& hist_mem = history.memory;
     auto& hist_view = history.view;
@@ -7083,8 +7158,7 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
     static const bool no_clamp = getenv("RX_VK_TAAU_CLAMP") == nullptr;
     // (the ones a new size replaced: given back 120 presents later, when no work in flight can use them. They were left, the
     // output's size changing with the dynamic resolution. RX_VK_TAAU_HIST_LEAK=1: as before)
-    struct OldHist { VkImage image; VmaAllocation mem; VkImageView view; uint64_t frame; };
-    static std::vector<OldHist> old_hist;
+    std::vector<TaauOldHistory>& old_hist = taau_old_histories;
     static const bool leak = getenv("RX_VK_TAAU_HIST_LEAK") != nullptr;
     for (size_t i = 0; i < old_hist.size();) {
         if (texture_frame_no() - old_hist[i].frame < 120) { i++; continue; }
@@ -7621,12 +7695,19 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr), p.layout = VK_NULL_HANDLE;
         if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr), p.set_layout = VK_NULL_HANDLE;
     };
+    const uint64_t device = device_generation();
+    std::atomic<bool> rebuilt{false};   // (a device rebuild ended the run: the rest is prepared at the next start)
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
         SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
         for (;;) {
             if (prepare_stopped()) return;
+            DeviceUse use;   // (one program at a time: a device rebuild waits for it, and ends the run)
+            if (device_generation() != device) {
+                rebuilt = true;
+                return;
+            }
             const size_t i = next++;
             if (i >= total) return;
             const size_t k = order[i / 3];
@@ -7664,7 +7745,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
-    while (done.load() < total && !prepare_stopped()) {
+    while (done.load() < total && !prepare_stopped() && !rebuilt.load()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
         Sleep(100);
         if (next.load() >= total + threads.size()) break;
@@ -7675,6 +7756,11 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     if (prepare_stopped()) {   // (closed: what was made is in the program cache already, the rest is made at the next start)
         logf("vk: shader preparation stopped at %zu of %zu (the window was closed): the next start goes on from there", done.load(),
              total);
+        remove(warming.c_str());
+        return false;
+    }
+    if (rebuilt.load()) {   // (what was made is in the program cache already)
+        logf("vk: shader preparation ended at %zu of %zu by a device rebuild: the next start goes on from there", done.load(), total);
         remove(warming.c_str());
         return false;
     }
@@ -7791,13 +7877,16 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     pre->notes = std::move(notes), pre->computes = std::move(computes), pre->fallbacks = std::move(fallbacks);
     auto& next = pre->next;
     auto& done = pre->done;
-    const auto worker = [pre, total] {
+    const uint64_t device = device_generation();
+    const auto worker = [pre, total, device] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         auto& notes = pre->notes;
         auto& computes = pre->computes;
         auto& fallbacks = pre->fallbacks;
         for (;;) {
             if (prepare_stopped()) return;
+            DeviceUse use;   // (one pipeline at a time: a device rebuild waits for it; its programs gone, the run ends)
+            if (device_generation() != device) return;
             const size_t i = pre->next++;
             if (i >= total) return;
             if (i < computes.size()) {
@@ -8098,8 +8187,10 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             { ParLock lk; pcache_init(); }
             const Program* job = &p;
             // (issue 496: one at a time on Intel. RX_VK_COMPUTE_SERIAL=1 or 0 says so on any GPU)
-            static const bool serial = getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1'
-                                                                     : dev.props.vendorID == 0x8086;
+            static DeviceLatch<bool> serial_latch;
+            const bool serial = serial_latch.get([] {
+                return getenv("RX_VK_COMPUTE_SERIAL") ? getenv("RX_VK_COMPUTE_SERIAL")[0] == '1' : dev.props.vendorID == 0x8086;
+            });
             const auto info = [](const Program& q) {
                 VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
                 ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -8570,6 +8661,116 @@ void pipeline_cache_save(bool force) {
         }
     }
 }
+
+namespace {
+template <class T> void tls_clear(T* object) {
+    if (object) *object = T{};
+}
+void destroy_mapped(VkBuffer& buffer, VmaAllocation& memory) {
+    if (buffer) destroy_buffer(buffer, memory);
+    buffer = VK_NULL_HANDLE, memory = nullptr;
+}
+// (a device rebuild: pipelines, samplers, the recordings' pools and streams and this file's helper objects destroyed; each is made
+// again at its first use on the new device, the pipelines from the driver's cache saved here first)
+void release() {
+    pipeline_cache_save(true);
+    play_cache_drop();
+    for (auto& [key, e] : pipelines)
+        if (const VkPipeline pl = e->pipeline.load()) vkDestroyPipeline(dev.device, pl, nullptr);
+    pipelines.clear();
+    for (auto& [key, pl] : gpl_libs) vkDestroyPipeline(dev.device, pl, nullptr);
+    gpl_libs.clear();
+    for (VkPipeline pl : gpl_linked) vkDestroyPipeline(dev.device, pl, nullptr);
+    gpl_linked.clear();
+    for (auto& [key, sm] : samplers) vkDestroySampler(dev.device, sm, nullptr);
+    samplers.clear();
+    for (auto& [key, pl] : clear_pipes) vkDestroyPipeline(dev.device, pl, nullptr);
+    clear_pipes.clear();
+    clear_failures.clear();   // (what the old device could not make is tried again on the new one)
+    if (clear_layout) vkDestroyPipelineLayout(dev.device, clear_layout, nullptr);
+    clear_layout = VK_NULL_HANDLE;
+    if (pcache) vkDestroyPipelineCache(dev.device, pcache, nullptr);
+    pcache = VK_NULL_HANDLE;
+    for (RecordingRes& r : res) {
+        if (r.pool) vkDestroyDescriptorPool(dev.device, r.pool, nullptr);
+        for (VkDescriptorPool extra : r.extra) vkDestroyDescriptorPool(dev.device, extra, nullptr);
+        for (RecordingRes::Stream& st : r.streams) destroy_buffer(st.buffer, st.alloc);
+    }
+    res.clear();
+    stream_extra = 0;
+    destroy_mapped(zero_buffer, zero_alloc);
+    dummies = Dummies{};
+    if (marker_buffer) vkDestroyBuffer(dev.device, marker_buffer, nullptr);
+    if (marker_memory) vkFreeMemory(dev.device, marker_memory, nullptr);   // (its mapping with it)
+    marker_buffer = VK_NULL_HANDLE, marker_memory = VK_NULL_HANDLE, marker_words = nullptr;
+    destroy_mapped(probe_buf, probe_mem), probe_map = nullptr;
+    if (stats_pool) vkDestroyQueryPool(dev.device, stats_pool, nullptr);
+    stats_pool = VK_NULL_HANDLE;
+    destroy_mapped(stats_args, stats_args_mem), stats_args_map = nullptr;
+    destroy_mapped(stats_watch, stats_watch_mem), stats_watch_map = nullptr;
+    destroy_mapped(stats_gpu, stats_gpu_mem), stats_gpu_map = nullptr;
+    {
+        std::lock_guard lk(miss_mu);
+        destroy_mapped(miss_buf, miss_mem), miss_map = nullptr;
+        miss_slot.clear();
+    }
+    destroy_mapped(mesh_ring, mesh_ring_mem), mesh_ring_at = 0;
+    destroy_mapped(mesh_args_buffer, mesh_args_alloc), mesh_args_words = nullptr, mesh_args_address = 0;
+    for (auto& [buffer, memory] : fallback_made) destroy_buffer(buffer, memory);
+    fallback_made.clear();
+    for (HelperPipeline* h : {&movie_helper, &typed_helper}) {
+        if (h->pipe) vkDestroyPipeline(dev.device, h->pipe, nullptr);
+        if (h->layout) vkDestroyPipelineLayout(dev.device, h->layout, nullptr);
+        if (h->set) vkDestroyDescriptorSetLayout(dev.device, h->set, nullptr);
+        if (h->linear) vkDestroySampler(dev.device, h->linear, nullptr);
+        *h = HelperPipeline{};
+    }
+    if (mask_blend.pipe) vkDestroyPipeline(dev.device, mask_blend.pipe, nullptr);
+    if (mask_blend.layout) vkDestroyPipelineLayout(dev.device, mask_blend.layout, nullptr);
+    if (mask_blend.set) vkDestroyDescriptorSetLayout(dev.device, mask_blend.set, nullptr);
+    for (const auto& [key, view] : mask_blend.views)
+        if (view) vkDestroyImageView(dev.device, view, nullptr);
+    for (size_t i = 0; i < std::size(mask_blend.hist); i++) {
+        if (mask_blend.hist_view[i]) vkDestroyImageView(dev.device, mask_blend.hist_view[i], nullptr);
+        if (mask_blend.hist[i]) destroy_image(mask_blend.hist[i], mask_blend.hist_mem[i]);
+    }
+    mask_blend = MaskBlend{};
+    for (TaauHistory& h : taau_histories) {
+        if (h.view) vkDestroyImageView(dev.device, h.view, nullptr);
+        if (h.image) destroy_image(h.image, h.memory);
+        h = TaauHistory{};
+    }
+    for (const TaauOldHistory& h : taau_old_histories) {
+        if (h.view) vkDestroyImageView(dev.device, h.view, nullptr);
+        destroy_image(h.image, h.mem);
+    }
+    taau_old_histories.clear();
+}
+// (a recording thread's handles and entries of the device before)
+void thread_reset() {
+    rec_cmd = VK_NULL_HANDLE, rec_value = 0, cur = nullptr;
+    cur_program = nullptr;
+    for (PipeFast& f : pipe_fast) f = PipeFast{};
+    tls_clear(handle_hits_tls), tls_clear(bank_cache_tls), tls_clear(dw_tls), tls_clear(draw_sampled_tls);
+    tls_clear(gfx_sampled_tls), tls_clear(dump_written_tls), tls_clear(dump_sampled_tls), tls_clear(pushed_tls);
+    tls_clear(pass_tls), tls_clear(fallback_buffers_tls);
+    trace_tex_hit = nullptr, trace_tex_mask = 0;
+    grid_patch_want = false, grid_patch_at = UINT64_MAX, grid_patch_buf = VK_NULL_HANDLE;
+    fallback_payload_address = fallback_records_address = fallback_indirect_input = 0, fallback_draw_records = VK_NULL_HANDLE;
+    work_since_barrier = false;
+    last_desc_valid = false, last_desc_prog = nullptr, last_desc_bind = last_desc_reg = last_desc_ub = last_desc_dgen = 0;
+    tls_clear(last_desc_fp_tls), last_desc_fp_dummy = false, last_desc_samp = last_desc_destroy = 0;
+    dry_last_valid = false;
+    last_pipeline = VK_NULL_HANDLE;
+    last_vb = LastVb{}, last_vb_valid = false;
+    vertex_set = VertexSet{}, last_ib = IndexBind{};
+    targets_serial = ~0ull, cached_targets = Targets{};
+    last_dyn = DynState{}, last_dyn_valid = false, dyn_fast = DynFast{};
+    mesh_conv_buf = VK_NULL_HANDLE, mesh_conv_off = 0;
+    for (KeptVertex& k : kept_vb) k = KeptVertex{};
+}
+const DeviceLife life(kDeviceOrderDraws, "pipelines, samplers and draw buffers", release, nullptr, thread_reset);
+} // namespace
 
 } // namespace mkwvk
 
