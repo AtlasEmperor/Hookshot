@@ -930,6 +930,11 @@ def keep_build_files(given):
     return given if given is not None else keep_build_files_variable() is True
 
 
+def keep_build_files_args(chosen):
+    """The keep flag a builder passes for its player's choice: none when HOOKSHOT_KEEP_BUILD_FILES is set, which decides instead."""
+    return ["--keep-build-files"] if chosen and keep_build_files_variable() is None else []
+
+
 def clear_folder(path):
     """(issue 1354) A folder this build makes again from nothing (the game's code, exefs): gone before it is made. rmtree with
     ignore_errors left it behind whenever a file in it was held (an antivirus scan, an explorer window, a game still closing), and the

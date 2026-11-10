@@ -364,6 +364,7 @@ class Builder(tk.Tk):
         self.language = tk.StringVar(value=dict(make_game.LANGUAGES).get(code, names[0]))
         self.prepare = tk.BooleanVar(value=self.cfg.get("prepare", "1") != "0")   # (make_game.py's last step: off, at the first start)
         self.dlss = tk.BooleanVar(value=self.cfg.get("dlss", "0") == "1")
+        self.keep = tk.BooleanVar(value=self.cfg.get("keep", "0") == "1")   # (HOOKSHOT_KEEP_BUILD_FILES, set, decides instead)
         self.check_text = tk.StringVar()
         self.space_text = tk.StringVar()
         self.stage_text = tk.StringVar()
@@ -738,6 +739,13 @@ class Builder(tk.Tk):
                         command=self.on_dlss_changed, cursor="hand2").pack(anchor="w", pady=(px(12), 0))
         ttk.Label(options, text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them.",
                   style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
+        variable = make_game.keep_build_files_variable()
+        self.keep_shown = self.keep if variable is None else tk.BooleanVar(value=variable)   # (the variable, set: shown, not changed)
+        ttk.Checkbutton(options, text="Keep all build files for quicker updates", variable=self.keep_shown, command=self.on_keep_changed,
+                        cursor="hand2", state="normal" if variable is None else "disabled").pack(anchor="w", pady=(px(12), 0))
+        ttk.Label(options, text="The translated game code stays too, so an update translates it again only when the tools changed."
+                  if variable is None else "HOOKSHOT_KEEP_BUILD_FILES is set on this PC: it decides.",
+                  style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
 
         f.rowconfigure(10, weight=1, minsize=px(18))
         ttk.Label(f, textvariable=self.status, style="Status.TLabel", wraplength=px(800)).grid(
@@ -799,6 +807,10 @@ class Builder(tk.Tk):
         self.cfg["dlss"] = "1" if self.dlss.get() else "0"
         save_config(self.cfg)
         self.apply_mode()
+
+    def on_keep_changed(self):
+        self.cfg["keep"] = "1" if self.keep.get() else "0"
+        save_config(self.cfg)   # (at once: an update from the game folder's launcher reads it)
 
     def check_version(self):
         args = ["--nup", self.nup.get()] if self.kind.get() == "nup" else ["--exefs", self.exefs.get()]
@@ -985,7 +997,8 @@ class Builder(tk.Tk):
             return
         dlss = bool(self.dlss.get()) if getattr(self, "dlss_toggled", False) else folder_has_dlss(folder)
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder] + \
-            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss)   # (as the last build chose)
+            ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss) + \
+            make_game.keep_build_files_args(self.keep.get())   # (as the last build chose)
         self.heading.configure(text="Updating your game")
         self.stage_text.set("Compiling what changed")
         self.started = time.time()
@@ -1036,13 +1049,14 @@ class Builder(tk.Tk):
         code = next((c for c, n in make_game.LANGUAGES if n == self.language.get()), "en-US")
         dlss = bool(self.dlss.get()) if hasattr(self, "dlss") else False
         self.cfg.update(kind=self.kind.get(), nup=self.nup.get(), romfs=self.romfs.get(), exefs=self.exefs.get(), out=out, language=code,
-                        prepare="1" if self.prepare.get() else "0", **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
+                        prepare="1" if self.prepare.get() else "0", keep="1" if self.keep.get() else "0",
+                        **({"dlss": "1" if dlss else "0"} if hasattr(self, "dlss") else {}))
         save_config(self.cfg)
         # (issue 531) Without HOOKSHOT_JOBS or RX_JOBS, make_game chooses as on Windows, from the memory free now; this window chose
         # fewer, 80% of the total memory at 3.5 GB each, and the CPU sat at 29%
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py")] + src + ["--out", out, "--language", code] + \
             ([] if jobs is None else ["--jobs", str(jobs)]) + ([] if self.prepare.get() else ["--no-prepare-shaders"]) + \
-            (dlss_args(True) if dlss else [])
+            (dlss_args(True) if dlss else []) + make_game.keep_build_files_args(self.keep.get())
         slow = slow_disk_warning(out)   # (a warning, not a stop: a hard drive still builds, only much slower)
         if slow is not None and not messagebox.askokcancel("Hookshot", slow):
             return

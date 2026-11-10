@@ -42,7 +42,7 @@ class BuildHarness:
         exefs.mkdir(exist_ok=True)
         self.gui = SimpleNamespace(
             out=value(str(folder / "out")), kind=value(kind), nup=value(str(nup)),
-            romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"), prepare=value(True),
+            romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"), prepare=value(True), keep=value(False),
             cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None)
 
         def start_process(command, **kwargs):
@@ -94,7 +94,7 @@ class BuilderBuildJobsTests(unittest.TestCase):
                                        encoding="utf-8", errors="replace", start_new_session=True))
         self.assertEqual(harness.events[0][1], dict(previous="kept", kind=gui.kind.get(), nup=gui.nup.get(),
                                                   romfs=gui.romfs.get(), exefs=gui.exefs.get(), out=gui.out.get(), language="en-US",
-                                                  prepare="1"))
+                                                  prepare="1", keep="0"))
         self.assertEqual(harness.events[3][1], dict(target=gui.read, args=(gui.proc,), daemon=True))
 
     def test_positive_hookshot_jobs_is_passed_on(self):
@@ -110,6 +110,24 @@ class BuilderBuildJobsTests(unittest.TestCase):
         command, _ = harness.processes[0]
         self.assertEqual(command[-1], "--no-prepare-shaders")
         self.assertEqual(harness.events[0][1]["prepare"], "0")
+
+    def test_a_kept_choice_keeps_the_build_files(self):
+        harness = BuildHarness(self.folder, {})
+        harness.gui.keep = value(True)
+        with mock.patch.dict(os.environ, {k: v for k, v in os.environ.items() if k != "HOOKSHOT_KEEP_BUILD_FILES"}, clear=True):
+            harness.run()
+        command, _ = harness.processes[0]
+        self.assertEqual(command[-1], "--keep-build-files")
+        self.assertEqual(harness.events[0][1]["keep"], "1")
+
+    def test_the_variable_decides_over_the_kept_choice(self):
+        for variable in ("0", "1"):
+            with self.subTest(variable=variable), mock.patch.dict(os.environ, {"HOOKSHOT_KEEP_BUILD_FILES": variable}):
+                harness = BuildHarness(self.folder, {})
+                harness.gui.keep = value(True)
+                harness.run()
+                command, _ = harness.processes[0]
+                self.assertNotIn("--keep-build-files", command)
 
     def test_zero_falls_back_to_rx_jobs_for_extracted_folders(self):
         harness = BuildHarness(self.folder, {"HOOKSHOT_JOBS": "0", "RX_JOBS": "2"}, kind="folders")

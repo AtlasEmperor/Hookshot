@@ -54,6 +54,17 @@ class KeepBuildFilesTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, environment, clear=True):
                     self.assertIs(make_game.keep_build_files_variable(), expected)
 
+    def test_a_builder_passes_the_flag_only_when_the_variable_is_unset(self):
+        flag = ["--keep-build-files"]
+        for variable, chosen, expected in ((None, True, flag), (None, False, []), ("", True, flag), ("0", True, []), ("1", True, []),
+                                           ("1", False, [])):
+            with self.subTest(variable=variable, chosen=chosen):
+                environment = {k: v for k, v in os.environ.items() if k != "HOOKSHOT_KEEP_BUILD_FILES"}
+                if variable is not None:
+                    environment["HOOKSHOT_KEEP_BUILD_FILES"] = variable
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    self.assertEqual(make_game.keep_build_files_args(chosen), expected)
+
     def test_the_command_line_takes_both_forms(self):
         for argv, expected in ((["--keep-build-files"], True), (["--no-keep-build-files"], False), ([], None)):
             with self.subTest(argv=argv), mock.patch.object(sys, "argv", ["make_game.py", "--out", "authored"] + argv):
