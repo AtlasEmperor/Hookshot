@@ -66,6 +66,25 @@ sealed record Tools(string Root, string Python, string[]? PythonArgs = null)
     static string? FirstOnPath(string name) => AllOnPath(name).FirstOrDefault();
 
     static bool IsStoreShortcut(string path) => path.Contains(@"\Microsoft\WindowsApps\", StringComparison.OrdinalIgnoreCase);
+
+    /// A Python script of these tools (its path under Root) as a hidden child process, its output read as UTF-8
+    public ProcessStartInfo Script(string script, IEnumerable<string> args)
+    {
+        var si = new ProcessStartInfo(Python)
+        {
+            WorkingDirectory = Root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        si.Environment["PYTHONIOENCODING"] = "utf-8";
+        foreach (var a in PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
+        si.ArgumentList.Add("-I");
+        si.ArgumentList.Add(Path.Combine(Root, script));
+        foreach (var a in args) si.ArgumentList.Add(a);
+        return si;
+    }
 }
 
 /// nx2/make_game.py as a child process: its lines as they come, and how it ended.
@@ -102,15 +121,7 @@ sealed class Runner
     static ProcessStartInfo Info(Tools tools, IEnumerable<string> args, int? workers = null, string? ngxSdk = null,
                                  int? memoryGb = null, string? ffxSdk = null)
     {
-        var si = new ProcessStartInfo(tools.Python)
-        {
-            WorkingDirectory = tools.Root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        si.Environment["PYTHONIOENCODING"] = "utf-8";
+        var si = tools.Script(Path.Combine("nx2", "make_game.py"), args);
         BuildWorkers.Apply(si, workers);
         BuildMemory.Apply(si, memoryGb);
         // (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
@@ -128,10 +139,6 @@ sealed class Runner
             var path = Path.Combine(tools.Root, folder);
             if (Directory.Exists(path)) si.Environment[name] = path;
         }
-        foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
-        si.ArgumentList.Add("-I");
-        si.ArgumentList.Add(Path.Combine(tools.Root, "nx2", "make_game.py"));
-        foreach (var a in args) si.ArgumentList.Add(a);
         return si;
     }
 

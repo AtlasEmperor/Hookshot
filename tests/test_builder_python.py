@@ -10,15 +10,23 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "builder" / "HookshotBuilder" / "Runner.cs"
 
 
+def body(source, start):
+    """The method that starts at start, up to its return"""
+    text = source[source.index(start):]
+    return text[:text.index("return si;")]
+
+
 def main():
     source = RUNNER.read_text(encoding="utf-8")
-    info = source[source.index("static ProcessStartInfo Info("):]
-    info = info[:info.index("return si;")]
-    if 'si.ArgumentList.Add("-I")' not in info:
-        raise SystemExit("Runner.Info does not run the tools isolated")
-    if "tools.PythonArgs" not in info:
-        raise SystemExit("Runner.Info drops the py launcher's -3")
-    if info.index("tools.PythonArgs") > info.index('si.ArgumentList.Add("-I")'):
+    # (Tools.Script starts every tools script, the build driver's included: Runner.Info goes through it)
+    if 'tools.Script(Path.Combine("nx2", "make_game.py"), args)' not in body(source, "static ProcessStartInfo Info("):
+        raise SystemExit("Runner.Info does not start the build driver through Tools.Script")
+    script = body(source, "public ProcessStartInfo Script(")
+    if 'si.ArgumentList.Add("-I")' not in script:
+        raise SystemExit("Tools.Script does not run the tools isolated")
+    if "PythonArgs" not in script:
+        raise SystemExit("Tools.Script drops the py launcher's -3")
+    if script.index("PythonArgs") > script.index('si.ArgumentList.Add("-I")'):
         raise SystemExit("py -I -3: Python sees -3 as one of its own options (Unknown option: -3)")
     if 'new[] { "-3" }' not in source or "IsStoreShortcut" not in source:
         raise SystemExit("the source-tree Python no longer avoids Windows' Store shortcut with py -3")
