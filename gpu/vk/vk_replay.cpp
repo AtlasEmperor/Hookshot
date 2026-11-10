@@ -4225,7 +4225,7 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
 
 bool replay_start() {
     menu_init();
-    debug_settings_init(0, 0);   // (the first call counts: the environment overrides apply even where the menu is absent)
+    debug_settings_init(opts.sample_log, opts.exposure_log);   // (the saved choices, then the environment overrides)
     if (!memory_init() || !vma_init(instance_proc())) return false;
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
