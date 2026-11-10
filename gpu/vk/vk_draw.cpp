@@ -36,6 +36,7 @@
 #include "vk_draw.h"
 #include "vk_menu.h"          // (opts.anisotropy: the Anisotropic filtering row; resolution_scale)
 #include "upscaler_rows.h"    // (upscale_lod_bias: which upscalers draw the 3D smaller)
+#include "vk_debug.h"
 #include "dlss_actor.h"
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
@@ -4870,16 +4871,9 @@ std::atomic<int64_t> world_drawn_at{0};
 // drawn behind the wheel only, not the pause menu or the map): no sides of ours then (vk_framegen.cpp wide_sides)
 std::atomic<int64_t> wheel_drawn_at{0};
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
-// (hookshot) RX_VK_EXPOSURE_LOG=1: the final pass's exposure (c3+0x38 of its fragment stage, OoT's 73320e720a317817) at each
-// frame, kept for exposure_log_dump when the frame log sees a white picture
-struct ExposureRing { int64_t present; uint32_t word; };
+// The final pass's exposure (c3+0x38 of its fragment stage, OoT's 73320e720a317817) at each frame, kept by the live
+// diagnostic controls (vk_debug.h) for the dump the frame log makes when it sees a white picture
 std::mutex exposure_mu;
-ExposureRing exposure_ring[32];
-uint32_t exposure_at = 0;
-bool exposure_log_on() {
-    static const bool on = getenv("RX_VK_EXPOSURE_LOG") != nullptr;
-    return on;
-}
 void exposure_note(const NvnState& s, const Program& p) {
     static std::unordered_map<uint64_t, bool> known;
     bool hit = false;
@@ -4891,29 +4885,7 @@ void exposure_note(const NvnState& s, const Program& p) {
     }
     if (!hit) return;
     for (const Stage& st : p.stages)
-        if (st.nvn_stage == 1) {
-            const uint32_t w = stage_cbuf_word(s, st, 3, 0x38);
-            std::lock_guard lk(exposure_mu);
-            exposure_ring[exposure_at++ % 32] = {presents_now, w};
-            static const bool every = getenv("RX_VK_EXPOSURE_LOG") && atoi(getenv("RX_VK_EXPOSURE_LOG")) == 2;
-            if (every) {
-                float f;
-                std::memcpy(&f, &w, 4);
-                logf("vk: exposure %llu %g", (unsigned long long)presents_now, f);
-            }
-        }
-}
-void exposure_log_dump(const char* why) {
-    std::lock_guard lk(exposure_mu);
-    char line[900];
-    int n = snprintf(line, sizeof line, "vk: %s: exposure by present:", why);
-    for (uint32_t i = 0; i < 32 && n < 860; i++) {
-        const ExposureRing& e = exposure_ring[(exposure_at + i) % 32];
-        float v;
-        std::memcpy(&v, &e.word, 4);
-        n += snprintf(line + n, sizeof line - n, " %lld:%.3g", (long long)e.present, v);
-    }
-    logf("%s", line);
+        if (st.nvn_stage == 1) debug_exposure_note(presents_now, stage_cbuf_word(s, st, 3, 0x38));
 }
 
 // ---- (EvilOOT) RX_VK_DRAW_STATS=<dir>: what each program's draws produce on the GPU, for one frame. When <dir>/draw_stats.now
@@ -6216,7 +6188,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (may_skip) return void(st_pending_skips++);
         wait_for(cp->ready);
     }
-    if (exposure_log_on() && cp) exposure_note(s, *cp);
+    if (debug_exposure_enabled() && cp) exposure_note(s, *cp);
     if (cp->failed) SKIP_HERE();
     Program& p = const_cast<Program&>(*cp);
     if (p.fallback_task && !d.indirect) {
