@@ -187,9 +187,11 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
   `%LOCALAPPDATA%\HookshotBuilder` on Windows, `~/.cache/hookshot-builder` on Linux.
 - The romfs is hard-linked instead of copied where the disk allows it.
 - The build files (about 4 GB: the translated code and the compiled objects) are deleted once the game is ready. None
-  of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
-  `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
-  deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
+  of them are needed to play. To keep them all, so that an update translates the game again only when what the
+  translation reads changed, tick **Keep all build files for quicker updates** in the builder (`--keep-build-files` on
+  the command line; the environment variable `HOOKSHOT_KEEP_BUILD_FILES=1`, or `0`, decides instead when it is set); on
+  Windows, **Free up space** on the "Your game is ready" page then deletes them when you want. The build files folder
+  can be moved before a build (**Change**, **Default**).
 - Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
   earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
   arguments](#running-the-game-from-the-command-line)).
