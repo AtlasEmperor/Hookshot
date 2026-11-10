@@ -1,7 +1,8 @@
 """A waited-for job still in the queue runs on the waiting thread at once (gpu/vk/vk_jobs.cpp jobs_wait; no game/GPU).
 
-vk_jobs.cpp is compiled beside stand-ins for vk_internal.h and vk_draw.h (logging, the thread calls, ub_thread_off) and
-run with every worker held in a job: the draw's pipeline job, queued behind them, must run on the thread that waits.
+vk_jobs.cpp is compiled beside stand-ins for vk_internal.h, vk_draw.h and vk_device_life.h (logging, the thread calls,
+ub_thread_off, a device rebuild's thread step) and run with every worker held in a job: the draw's pipeline job, queued
+behind them, must run on the thread that waits.
 python -I -B tests/test_jobs_wait_runs_queued.py
 """
 import argparse
@@ -34,6 +35,12 @@ inline void ub_thread_off() {}
 }
 """
 
+STUB_DEVICE_LIFE = """#pragma once
+namespace mkwvk {
+inline void device_thread_sync() {}
+}
+"""
+
 
 def check_source():
     """The pipeline and translation jobs a draw waits for are pushed with their flags, and jobs_wait still looks for them in the queue"""
@@ -61,6 +68,7 @@ def main():
             shutil.copy(ROOT / "gpu/vk" / name, tmp / name)
         (tmp / "vk_internal.h").write_text(STUB_INTERNAL, encoding="utf-8")
         (tmp / "vk_draw.h").write_text(STUB_DRAW, encoding="utf-8")
+        (tmp / "vk_device_life.h").write_text(STUB_DEVICE_LIFE, encoding="utf-8")
         exe = tmp / "jobs-wait"
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-pthread", "-I", str(tmp),
                         str(tmp / "vk_jobs.cpp"), str(ROOT / "tests/test_jobs_wait_runs_queued.cpp"), "-o", str(exe)],

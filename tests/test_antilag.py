@@ -35,7 +35,7 @@ main = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
 for call in ("antilag_device_extensions(want, exts);", "antilag_device_features(tail);", "antilag_device_created();"):
     if call not in main:
         raise SystemExit("vk_main.cpp no longer calls " + call)
-if main.index("antilag_device_features(tail);") > main.index("vkGetPhysicalDeviceFeatures2(dev.physical, &f);"):
+if main.index("antilag_device_features(tail);") > main.index("vkGetPhysicalDeviceFeatures2(d.physical, &f);"):
     raise SystemExit("vk_main.cpp: Anti-Lag 2's feature joins the chain after the features were queried")
 replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
 # (present ahead, #1720: present_image's present is its end, present_out, which present_commit also runs)

@@ -28,7 +28,9 @@ def main():
     a = p.parse_args()
     source = (a.source / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     owner_release = block(source, "void destroy_import_buffer(") if "void destroy_import_buffer(" in source else ""
-    actual = owner_release + "\n" + "\n".join(block(source, marker) for marker in [
+    # (the host pointers' memory type, kept at file scope for the device in use: import_pool asks it once a device)
+    declared = "".join(line + "\n" for line in source.splitlines() if line.startswith("uint32_t host_pointer_type "))
+    actual = declared + owner_release + "\n" + "\n".join(block(source, marker) for marker in [
         "bool import_on_hold(", "void import_remember_failure(", "bool import_dma_buf(", "bool import_pool("])
     # Select both platform routes independently of the machine running the game-free test.
     assert actual.count("#ifdef __linux__") == 1

@@ -35,7 +35,7 @@ def main():
     # Keep standard-container behavior, replacing only the allocator to target an individual cache.
     for old, new in [
         ("std::unordered_map<int, std::pair<uint32_t, nvn_samp_par>> seen", "FaultMap<int, std::pair<uint32_t, nvn_samp_par>, Seen> seen"),
-        ("std::unordered_map<uint64_t, VkSampler> mine", "FaultMap<uint64_t, VkSampler, Mine> mine"),
+        ("DeviceLocal<std::unordered_map<uint64_t, VkSampler>> mine", "DeviceLocal<FaultMap<uint64_t, VkSampler, Mine>> mine"),
         ("std::unordered_set<uint64_t> failed", "FaultSet<uint64_t, Failure> failed"),
     ]:
         assert actual.count(old) == 1, old

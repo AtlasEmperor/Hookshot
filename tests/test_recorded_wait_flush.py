@@ -20,10 +20,10 @@ def body(src, signature):
 def main():
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
     wait = body(replay, "bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok) {")
-    if "vkWaitSemaphores(" not in wait:
+    if "wait_semaphore_sliced(" not in wait:
         raise SystemExit("wait_recorded no longer waits on the recordings' timeline: update this test")
     flush = wait.find("queue_flush_for(")
-    if flush < 0 or flush > wait.index("vkWaitSemaphores("):
+    if flush < 0 or flush > wait.index("wait_semaphore_sliced("):
         raise SystemExit("wait_recorded waits without sending the held batch: a batched recording's signal never comes")
     if "wait_recorded(v, UINT64_MAX, &ok)" not in body(replay, "void invalidate(uint64_t gpu, uint64_t size) {"):
         raise SystemExit("invalidate's readback wait no longer goes through wait_recorded: update this test")

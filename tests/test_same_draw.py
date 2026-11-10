@@ -32,7 +32,7 @@ def main():
     if choose.index("prog_same(") > choose.index("picks[") :
         raise SystemExit("program_for hashes the inputs before checking the last answer")
     pipes = block(draw, "PipeEntry* graphics_pipeline(")
-    if pipes.index("pipe_same(") > pipes.index("mine.find("):
+    if pipes.index("pipe_same(") > pipes.index("mine->find("):
         raise SystemExit("graphics_pipeline hashes the key before checking the last pipeline")
     fixture = f'''#include <cstdint>
 #include <cstdio>

@@ -35,6 +35,16 @@ struct {
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
 } dev;
 
+// (vk_device_life.h's latch, worked out at its first use: each run here is another device)
+template <class T> struct DeviceLatch {
+    bool made = false;
+    T value{};
+    template <class Make> const T& get(Make&& make) {
+        if (!made) value = make(), made = true;
+        return value;
+    }
+};
+
 using Shader::Stage;
 using Id = uint32_t;
 struct EmitContext {

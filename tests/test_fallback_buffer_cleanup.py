@@ -45,8 +45,13 @@ def main():
     tls_start = source.index("struct TlsOwned {")
     tls_macro = source.index("#define TLS_OBJECT(", tls_start)
     tls_end = source.index("\n\n", tls_macro)
+    notes = ""   # (every thread's buffers listed for a device rebuild, where the source has it)
+    if "void fallback_note(" in source:
+        notes = "\n".join(line for line in source.splitlines() if line.startswith(("std::mutex fallback_made_mu;",
+                          "std::vector<std::pair<VkBuffer, VmaAllocation>> fallback_made;")))
+        notes += "\n" + block(source, "void fallback_note(")
     actual = "\n\n".join((source[tls_start:tls_end], block(source, "struct FallbackBuffers {", True),
-        next(line for line in source.splitlines() if line.startswith("TLS_OBJECT(fallback_buffers,")),
+        next(line for line in source.splitlines() if line.startswith("TLS_OBJECT(fallback_buffers,")), notes,
         block(source, "uint64_t fallback_buffer_address("), block(source, "bool fallback_buffers_of(")))
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     env = dict(os.environ)

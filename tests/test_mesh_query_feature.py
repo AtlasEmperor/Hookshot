@@ -27,7 +27,7 @@ def block(text, marker):
 
 
 def main():
-    if "dev.mesh_queries = dev.mesh_shader && mesh.meshShaderQueries;" not in MAIN.read_text(encoding="utf-8"):
+    if "d.mesh_queries = d.mesh_shader && mesh.meshShaderQueries;" not in MAIN.read_text(encoding="utf-8"):
         raise SystemExit("dev.mesh_queries is not the device's meshShaderQueries")
     body = block(DRAW.read_text(encoding="utf-8"), "bool stats_make_pool() {")
     asked = body.index("VK_QUERY_PIPELINE_STATISTIC_TASK_SHADER_INVOCATIONS_BIT_EXT")

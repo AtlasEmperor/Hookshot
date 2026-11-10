@@ -123,6 +123,12 @@ void vkDestroySampler(VkDevice, VkSampler sampler, const VkAllocationCallbacks*)
     if (!sampler) return;   // (Vulkan permits null destruction; a non-null error output is still undefined)
     assert(live.erase(sampler) == 1); destroyed++;   // (not undefined error output or an already-owned sampler)
 }
+// (vk_device_life.h's thread cache, on the one device of this test)
+template <class T> struct DeviceLocal {
+    T& get() { return value; }
+    T* operator->() { return &value; }
+    T value{};
+};
 /* ACTUAL */
 
 struct Program { bool push = true; VkPipelineLayout layout{}; VkDescriptorSetLayout set_layout{}; };

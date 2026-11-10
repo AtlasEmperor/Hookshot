@@ -18,6 +18,15 @@ constexpr VkBufferUsageFlags VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT = 4;
 constexpr int VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO = 1;
 struct VkBufferDeviceAddressInfo { int sType; VkBuffer buffer = 0; };
 struct { int device = 1; } dev;
+// (vk_device_life.h's latch, worked out at its first use: each run here is one device)
+template <class T> struct DeviceLatch {
+    bool made = false;
+    T value{};
+    template <class Make> const T& get(Make&& make) {
+        if (!made) value = make(), made = true;
+        return value;
+    }
+};
 
 static Allocation confirmed, poison;
 static std::vector<uint32_t> storage;
