@@ -19,6 +19,7 @@
 
 #include <cmath>
 
+#include "vk_device_life.h"
 #include "vk_framegen.h"
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
@@ -65,6 +66,7 @@ struct Job {
     OutSet* set;
     int64_t at;
     uint64_t value;   // (the recording that makes its frames)
+    uint64_t generation;   // (the device its frames were made on: a rebuild since drops them)
 };
 struct Pipe {
     VkDescriptorSetLayout set = VK_NULL_HANDLE;
@@ -452,15 +454,18 @@ void display_main() {
         const bool ahead = present_ahead_wanted(ahead_env, pace, shown, dev.swap_spare);
         PendingPresent pending[kMaxMult];
         if (ahead) {
-            static bool said;
-            if (!said) said = true, logf("vk: present ahead: a set's copies submitted at once, its presents on time (RX_VK_PRESENT_AHEAD=0: off)");
-            for (int k = 0; k < shown; k++) {
-                present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
-                present_defer_into = &pending[k];
-                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
-                present_defer_into = nullptr;
+            DeviceUse use;   // (the copies, their fences and the swapchain they go to: the device the set's frames were made on)
+            if (j.generation == device_generation()) {
+                static bool said;
+                if (!said) said = true, logf("vk: present ahead: a set's copies submitted at once, its presents on time (RX_VK_PRESENT_AHEAD=0: off)");
+                for (int k = 0; k < shown; k++) {
+                    present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
+                    present_defer_into = &pending[k];
+                    present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
+                    present_defer_into = nullptr;
+                }
+                if (pending[0].used) vkWaitForFences(dev.device, 1, &pending[0].done, VK_TRUE, 100000000ull);   // (100 ms at most)
             }
-            if (pending[0].used) vkWaitForFences(dev.device, 1, &pending[0].done, VK_TRUE, 100000000ull);   // (100 ms at most)
         }
         for (int k = 0; k < shown; k++) {
             int64_t due = timed ? j.set->due[k] : pace ? next_show : 0;
@@ -471,14 +476,18 @@ void display_main() {
             if (due - now > 1000000) wait_until_near(due - now - 1000000);
             while (now_ns() < due) SwitchToThread();
             const int64_t t = now_ns();
-            if (ahead) {
-                if (!present_commit(pending[k])) {   // (not shown: the line goes on, and the overlay and the counts leave it out)
-                    next_show = t + step;
-                    continue;
+            {
+                DeviceUse use;
+                if (j.generation != device_generation()) break;
+                if (ahead) {
+                    if (!present_commit(pending[k])) {   // (not shown: the line goes on, and the overlay and the counts leave it out)
+                        next_show = t + step;
+                        continue;
+                    }
+                } else {
+                    present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
+                    present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
                 }
-            } else {
-                present_kind.store(timed ? (j.set->game[k] ? 0 : 1) : k < j.set->made ? 1 : 0);
-                present_image(j.set->frame[k].image, fg.w, fg.h, nullptr, j.set->frame[k].view);
             }
             menu_note_frame(!timed && k == j.set->made);
             if (shown_at) {
@@ -822,12 +831,45 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
 void framegen_queue(uint64_t value) {
     if (!fg.recorded) return;
     std::lock_guard lk(fg.mu);
-    fg.jobs.push_back({fg.recorded, fg.recorded_at, value});
+    fg.jobs.push_back({fg.recorded, fg.recorded_at, value, device_generation()});
     fg.recorded = nullptr;
     fg.cv.notify_all();
 }
 
 /// Each present (vk_replay.cpp): ultrawide's menu setting to the game's side, and the sides to treat now
 void wide_sides_tick() { wide_now = wide_sides(); }
+
+namespace {
+// (a device rebuild: the frames queued for the display thread dropped, everything made again by the next init and init_scale)
+void release() {
+    {
+        std::lock_guard lk(fg.mu);
+        fg.jobs.clear();
+        for (OutSet& set : fg.sets) set.busy = false, set.made = 0;
+        fg.recorded = nullptr;
+    }
+    fg.cv.notify_all();
+    for (int i = 0; i < 2; i++) drop_img(fg.frames[i]), drop_img(fg.lumas[i]), drop_img(fg.flows[i]);
+    for (OutSet& set : fg.sets)
+        for (Img& t : set.frame) drop_img(t);
+    for (Pipe* p : {&fg.copy, &fg.luma, &fg.flow, &fg.median, &fg.synth}) drop_pipe(*p);
+    for (VkSampler* sampler : {&fg.nearest, &fg.linear, &scale.linear}) {
+        if (*sampler) vkDestroySampler(dev.device, *sampler, nullptr);
+        *sampler = VK_NULL_HANDLE;
+    }
+    fg.init = fg.failed = fg.have_prev = false;
+    fg.w = fg.h = 0, fg.cur = fg.next_set = fg.mult = 0, fg.last_at = fg.recorded_at = 0;
+    fg.game_ns = fg.slot_next = 0;
+    drop_img(scale.cropped), drop_img(scale.scaled), drop_img(scale.small);
+    drop_pipe(scale.pipe);
+    scale.init = scale.failed = false;
+    scale.cropped_w = scale.cropped_h = scale.scaled_w = scale.scaled_h = scale.small_w = scale.small_h = 0;
+    drop_img(hdr.out);
+    drop_pipe(hdr.pipe);
+    hdr.init = hdr.failed = false;
+    hdr.w = hdr.h = 0;
+}
+const DeviceLife life(kDeviceOrderPresent, "frame generation and upscaling", release, nullptr, nullptr);
+} // namespace
 
 } // namespace mkwvk
