@@ -18,6 +18,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"   // (RegisterUserTexture: the logo)
 #include "backends/imgui_impl_vulkan.h"
+#include "vk_device_life.h"
 #include "vk_game_font.h"   // (third_party/zstd: the game's font files)
 #include "vk_menu.h"        // (opts.hdr_white: the overlays' white on an HDR10 display)
 #if __has_include("hookshot_logo.h")
@@ -439,5 +440,31 @@ void record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool has = index < dev.swap_views.size() && dev.swap_views[index];
     record_to(cmd, has ? dev.swap_images[index] : VK_NULL_HANDLE, has ? dev.swap_views[index] : VK_NULL_HANDLE, w, h);
 }
+
+namespace {
+// (a device rebuild: the textures, the backend and the context let go; init makes them all again on the new device, at the
+// next frame the overlays draw)
+void release() {
+    if (ready) {
+        reap(true);
+        for (ImTextureData* tex : ImGui::GetPlatformIO().Textures)
+            if (Tex* t = (Tex*)tex->BackendUserData) {
+                if (t->set) ImGui_ImplVulkan_RemoveTexture(t->set);
+                if (t->view) vkDestroyImageView(dev.device, t->view, nullptr);
+                if (t->image) destroy_image(t->image, t->alloc);
+                IM_DELETE(t);
+                tex->BackendUserData = nullptr;
+                tex->SetTexID(ImTextureID_Invalid);
+            }
+        if (logo_) ImGui::UnregisterUserTexture(logo_), IM_DELETE(logo_), logo_ = nullptr;
+        ImGui_ImplVulkan_Shutdown();
+    }
+    if (tried && ImGui::GetCurrentContext()) ImGui::DestroyContext();
+    to_bake.clear(), kept.clear(), baked_sizes.clear();
+    fonts_ = Fonts{}, pipeline_format = VK_FORMAT_UNDEFINED, srgb_target = false;
+    tried = ready = false;
+}
+const DeviceLife life(kDeviceOrderPresent, "the overlays", release, nullptr, nullptr);
+} // namespace
 
 } // namespace mkwvk::ui

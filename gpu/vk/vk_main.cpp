@@ -20,6 +20,7 @@
 #include "vk_internal.h"
 #include "gpu_choice.h"
 #include "robust_choice.h"
+#include "vk_device_life.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
@@ -536,6 +537,18 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
     }
 }
 
+/// The window's swapchain destroyed, with its semaphores and the overlays' views of its images (the GPU done with it)
+void swapchain_destroy() {
+    reflex_swapchain_destroyed();   // (no latency sleep or markers may use the destroyed chain)
+    swap_views_drop();   // (hookshot: the overlays' views of its images, before it)
+    for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
+    vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
+    dev.swapchain = VK_NULL_HANDLE;
+    dev.swap_rendered.clear();
+    dev.swap_images.clear();
+    dev.swap_spare = 0;
+}
+
 bool create_swapchain(uint32_t width, uint32_t height, bool hdr_allowed) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
@@ -667,14 +680,7 @@ bool create_swapchain(uint32_t width, uint32_t height, bool hdr_allowed) {
     // Passing oldSwapchain retires it even when creation fails. Nothing may acquire from it again.
     if (dev.swapchain) {
         device_wait_idle_locked();   // (the present queue's presents of the old swapchain done too)
-        reflex_swapchain_destroyed();   // (no latency sleep or markers may use the destroyed chain)
-        swap_views_drop();   // (hookshot: the overlays' views of its images, before it)
-        for (auto semaphore : dev.swap_rendered) vkDestroySemaphore(dev.device, semaphore, nullptr);
-        vkDestroySwapchainKHR(dev.device, dev.swapchain, nullptr);
-        dev.swapchain = VK_NULL_HANDLE;
-        dev.swap_rendered.clear();
-        dev.swap_images.clear();
-        dev.swap_spare = 0;
+        swapchain_destroy();
     }
     if (result != VK_SUCCESS && dev.hdr) {   // (the driver refused the HDR10 chain: the SDR one instead, the retired chain gone above)
         logf("vk: vkCreateSwapchainKHR failed for HDR10 (VkResult %d): trying SDR", (int)result);
@@ -1071,6 +1077,18 @@ const char* describe() {
 }
 
 MkwVkRenderer table;
+
+// (a device rebuild: the window's swapchain destroyed with the old device, made again on the new one at the window's size;
+// the window's surface, the instance's, stays)
+void release_swapchain() {
+    if (dev.swapchain) swapchain_destroy();
+}
+bool rebuild_swapchain() {
+    if (dev.offscreen || !dev.surface) return true;
+    choose_present_queue();
+    return create_swapchain(dev.swap_extent.width, dev.swap_extent.height);
+}
+const DeviceLife swapchain_life(kDeviceOrderSwapchain, "the window's swapchain", release_swapchain, rebuild_swapchain, nullptr);
 
 } // namespace
 } // namespace mkwvk

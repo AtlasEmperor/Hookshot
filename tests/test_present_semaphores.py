@@ -34,6 +34,9 @@ begin = present[present.index('{') + 1:present.index('    if (src) {')]
 reflex = (source/'gpu/vk/vk_reflex.cpp').read_text()
 reset_start = reflex.index('void reflex_swapchain_destroyed(') if 'void reflex_swapchain_destroyed(' in reflex else -1
 reset = reflex[reset_start:reflex.index('\n}', reset_start)+2] if reset_start >= 0 else 'void reflex_swapchain_destroyed() {}'
+# (create_swapchain's teardown of the retired chain, in a function of its own when a device rebuild shares it)
+destroy_start = main.index('void swapchain_destroy() {') if 'void swapchain_destroy() {' in main else -1
+destroy = main[destroy_start:main.index('\n}', destroy_start)+2] if destroy_start >= 0 else ''
 fixture = r'''
 #include <vector>
 #include <set>
@@ -97,6 +100,7 @@ void vkDeviceWaitIdle(int) {idle=true;}
 // (vk_replay.cpp's helper: held submits out, then the device idle; the real one also takes the present queue's own lock)
 void device_wait_idle_locked() {queue_flush_locked();vkDeviceWaitIdle(dev.device);}
 void swap_views_drop() {}   // (hookshot: the overlays' views, vk_main.cpp)
+''' + destroy + r'''
 bool create_swapchain(unsigned width,unsigned height,bool hdr_allowed=true);
 bool recreate() {
     uint32_t n=0,width=640,height=480; struct {int format=1;} fmt;

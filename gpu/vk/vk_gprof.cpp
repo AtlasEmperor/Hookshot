@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "vk_device_life.h"
 #include "vk_gprof.h"
 #include "vk_work.h"   // (after the others: its timestamps go through RX_VK_RECORDER with the commands around them)
 
@@ -249,5 +250,16 @@ void gprof_report(int frames) {
     recs[0] = recs[1] = dropped = 0;
     acc_frames = 0;
 }
+
+namespace {
+// (a device rebuild: the pool made again by the next recording; its spans not collected yet are dropped)
+void release() {
+    if (pool) vkDestroyQueryPool(dev.device, pool, nullptr);
+    pool = VK_NULL_HANDLE;
+    for (Slot& slot : slots) slot = Slot{};
+    cur = -1;
+}
+const DeviceLife life(kDeviceOrderPresent, "the GPU pass timing", release, nullptr, nullptr);
+} // namespace
 
 } // namespace mkwvk

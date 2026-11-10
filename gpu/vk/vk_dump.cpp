@@ -10,6 +10,7 @@
 
 #include <direct.h>
 
+#include "vk_device_life.h"
 #include "vk_dump.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -473,5 +474,10 @@ void dump_write() {
     }
     buf_items.clear();
 }
+
+namespace {
+// (a device rebuild: the dumps taken so far written out, their buffers and images given back with the old device)
+const DeviceLife life(kDeviceOrderPresent, "pending frame dumps", dump_write, nullptr, nullptr);
+} // namespace
 
 } // namespace mkwvk
