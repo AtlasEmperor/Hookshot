@@ -15,6 +15,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "vk_device_life.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
 
@@ -74,6 +75,7 @@ void stage(VkAntiLagStageAMD s) {
 
 void antilag_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all) {
     static const char* e = getenv("RX_VK_ANTILAG");
+    al().have_ext = false;   // (asked again for each device made)
     if (e && !strcmp(e, "-")) return;   // (RX_VK_ANTILAG=-: the extension not even enabled)
     bool have = false;
     for (const auto& x : all) have |= !strcmp(x.extensionName, VK_AMD_ANTI_LAG_EXTENSION_NAME);
@@ -119,5 +121,16 @@ void antilag_input() {
     stage(VK_ANTI_LAG_STAGE_INPUT_AMD);   // (the driver's wait, when it wants one)
     a.frame_marked = true;
 }
+
+namespace {
+// (a device rebuild: the old device's function let go; antilag_device_created takes the new one's, the extension as
+// make_device asked for it)
+void release() {
+    AntiLag& a = al();
+    std::lock_guard lk(a.mu);
+    a.update = nullptr, a.ready = false, a.active = false, a.frame_marked = false;
+}
+const DeviceLife life(kDeviceOrderPresent, "AMD Anti-Lag 2", release, nullptr, nullptr);
+}  // namespace
 
 } // namespace mkwvk
