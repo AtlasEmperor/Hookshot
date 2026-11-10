@@ -2934,6 +2934,13 @@ void status_tick() {
 }
 
 std::atomic<bool> present_native_pq{false};   // (do_present: the game's picture is already HDR10)
+/// (hookshot) Whether a diagnostic that records SDR pictures (RX_VK_SHOTS, RX_VK_FRAMELOG) leaves this one out: it is PQ-coded, HDR
+/// set to Native. Said once per diagnostic, through its own `told`
+bool skip_pq_picture(const char* diagnostic, bool& told) {
+    if (!present_native_pq.load(std::memory_order_relaxed)) return false;
+    if (!told) told = true, logf("vk: HDR: %s skips PQ10 pictures; it records SDR ones", diagnostic);
+    return true;
+}
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 struct PendingShot {
     bool on = false;
@@ -3047,6 +3054,8 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                 struct stat sb;
                 shot = stat(shot_go, &sb) == 0;
             }
+            static bool shots_told = false;
+            if (shot && skip_pq_picture("RX_VK_SHOTS", shots_told)) shot = false;
             // (RX_VK_SHOT_MENU=1, a debug aid: without a window the Insert menu is neither ticked nor drawn; this ticks it
             // at each present and draws it into the shots, for pictures of it from a headless run)
             static const bool shot_menu = getenv("RX_VK_SHOT_MENU") != nullptr;
@@ -3435,7 +3444,8 @@ bool framelog_on() {
         const std::string go = std::string(framelog_path()) + ".go";
         on = GetFileAttributesA(go.c_str()) != INVALID_FILE_ATTRIBUTES;
     }
-    return on && framelog_ready();
+    static bool told = false;
+    return on && framelog_ready() && !skip_pq_picture("RX_VK_FRAMELOG", told);
 }
 void framelog_collect(int slot) {
     LogSlot& l = log_slots[slot];
