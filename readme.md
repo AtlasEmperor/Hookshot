@@ -771,6 +771,14 @@ memory sync: in Hyrule Field on a 10 GB RTX 3080, about 66 MB and 4.4 ms a submi
 `RX_VK_WB_MAX_KB=1024` still copies the small results the CPU does read (the exposure meter and the like) and took the
 same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
+For brief lighting flashes, `RX_VK_LOG_SAMPLES=600` logs up to 4,096 occlusion counter reports from presentation 600 on
+(`0` starts immediately), for at most 30 seconds after that presentation. Each `vk: samples` line gives the
+presentation, the queue, the number of counter resets seen on that queue, the report address and the requested value.
+`written 1` means the counter word was written; `written 0` means an earlier recorded flag was preserved. Queue `0` is
+a replay without queues; reset `0` means no reset was seen on that queue. The log says when the limit is reached.
+Remove the setting after collecting the log. The trace leaves the counter estimates, queue waits, batching and replay
+scheduling as they are, and logging can still add overhead. It is diagnostic evidence, not a visual fix.
+
 </details>
 
 ## How it works
