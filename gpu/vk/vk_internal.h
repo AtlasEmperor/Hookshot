@@ -34,8 +34,9 @@ void queue_flush();          // (the same, taking dev.present_mu)
 // every queue is synchronized by the host around it
 void device_wait_idle_locked();
 
-struct Device {
-    VkInstance instance = VK_NULL_HANDLE;
+/// What a VkDevice is made with: its GPU, the device and its queues, the extensions and features it was given (vk_main.cpp
+/// make_device). A rebuild on another GPU or with other features makes a new set and adopts it whole (vk_device_rebuild.cpp).
+struct DeviceFacts {
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties props{};
     VkPhysicalDeviceMemoryProperties memory{};
@@ -57,19 +58,29 @@ struct Device {
          coop_matrix = false,   // (VK_KHR_cooperative_matrix with its feature)
          native_mma = false;    // (HMMA on it: the cooperative matrix test passed, vk_coopmat.cpp)
     bool eds3_polygon = false, eds3_clamp = false, eds3_blend = false, eds3_a2c = false;
-    bool swapchain_colorspace = false;   // (hookshot) VK_EXT_swapchain_colorspace: HDR10 surfaces are listed
-    bool hdr = false;                    // (hookshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it
     bool mesh_fallback = false;   // (hookshot) no VK_EXT_mesh_shader: task and mesh programs as compute shaders (vk_shader.cpp)
     bool task_mesh_fallback = false;
     bool uses_mesh_fallback(bool has_task) const {
         return mesh_fallback || (task_mesh_fallback && has_task);
     }
+    bool robust_buffers = false;  // (robustBufferAccess and robustBufferAccess2 given: the Robust buffers row, robust_choice.h)
+    bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
     uint32_t subgroup_size = 32, subgroup_max = 32;   // (the lanes a stage not pinned runs at, and the most it can have)
     VkDriverId driver_id{};
     uint32_t max_push_descriptors = 0;
+    // (hookshot) a queue of a compute family for vkQueuePresentKHR alone (vk_main.cpp make_device; RX_VK_PRESENT_QUEUE=0 / 1).
+    // VK_NULL_HANDLE: presents go on `queue` under present_mu. Its own lock: Device::present_queue_mu, taken after present_mu
+    VkQueue present_queue = VK_NULL_HANDLE;
+    uint32_t present_family = 0;   // (present_queue's family, the swapchain's images shared with it)
+};
+
+struct Device : DeviceFacts {
+    VkInstance instance = VK_NULL_HANDLE;
+    bool swapchain_colorspace = false;   // (hookshot) VK_EXT_swapchain_colorspace: HDR10 surfaces are listed
+    bool hdr = false;                    // (hookshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
     bool offscreen = false;
     // the window
@@ -83,15 +94,10 @@ struct Device {
     uint32_t swap_spare = 0;
     std::vector<VkImageView> swap_views;   // (hookshot) a view of each, for Dear ImGui's overlays (VK_NULL_HANDLE: none)
     VkFormat swap_view_format = VK_FORMAT_UNDEFINED;   // (their format: the UNORM one of an sRGB swapchain when it can be)
-    bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)
     std::vector<VkSemaphore> swap_rendered;   // present waits belong to acquired images, not frame slots
     std::mutex present_mu;   // (the swapchain: presents and resizes)
     std::atomic<uint64_t> swap_resize{0};   // (a new window size, width << 32 | height: the next present makes the swapchain)
-    // (hookshot) a queue of a compute family for vkQueuePresentKHR alone (vk_main.cpp create_device; RX_VK_PRESENT_QUEUE=0 / 1).
-    // VK_NULL_HANDLE: presents go on `queue` under present_mu. Its own lock: taken after present_mu, never before it
-    VkQueue present_queue = VK_NULL_HANDLE;
-    std::mutex present_queue_mu;
-    uint32_t present_family = 0;   // (present_queue's family, the swapchain's images shared with it)
+    std::mutex present_queue_mu;   // (present_queue's: taken after present_mu, never before it)
 };
 extern Device dev;
 
