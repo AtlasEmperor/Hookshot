@@ -169,6 +169,7 @@ void rebuild_main() {
         int64_t translated0 = 0, failed0 = 0;
         shader_stats(&translated0, &failed0);
         const double ms0 = shader_translate_ms();
+        const int64_t hits0 = shader_cache_hits();
         const Clock::time_point since = Clock::now();
         for (const auto window : kCostWindows) {
             {
@@ -177,9 +178,9 @@ void rebuild_main() {
             }
             int64_t translated = 0, failed = 0;
             shader_stats(&translated, &failed);
-            logf("vk: device rebuild: %.0f s since, %lld programs translated again (%.0f ms of translation), %lld failed",
-                 ms_between(since, Clock::now()) / 1000.0, (long long)(translated - translated0), shader_translate_ms() - ms0,
-                 (long long)(failed - failed0));
+            logf("vk: device rebuild: %.0f s since, %lld programs translated (%.0f ms of translation), %lld read back from the program "
+                 "cache, %lld failed", ms_between(since, Clock::now()) / 1000.0, (long long)(translated - translated0),
+                 shader_translate_ms() - ms0, (long long)(shader_cache_hits() - hits0), (long long)(failed - failed0));
         }
     }
 }

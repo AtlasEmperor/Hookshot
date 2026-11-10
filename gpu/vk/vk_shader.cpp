@@ -2842,6 +2842,9 @@ void shader_stats(int64_t* translated, int64_t* failed) {
 double shader_translate_ms() {
     return st_translate_ns.load() / 1e6;
 }
+int64_t shader_cache_hits() {
+    return st_cache_hits.load();
+}
 
 void program_released(const nvn_prog* p) {
     if (!p) return;
