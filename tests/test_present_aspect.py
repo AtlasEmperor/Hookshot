@@ -41,14 +41,15 @@ struct VkClearColorValue { float r, g, b, a; };
 struct VkImageSubresourceRange { int aspect, mip, levels, layer, layers; };
 struct { struct { uint32_t width, height; } swap_extent; bool hdr = false; } dev;
 std::atomic<bool> present_native_pq{false};
+std::atomic<bool> present_game_pq{false};
 struct Host { float (*aspect_ratio)(); };
 Host* host;
 float logical_aspect;
 float aspect_callback() { return logical_aspect; }
 bool filtered;
-int clears, blits, scales, barriers, hdr_calls, hdr_barriers;
-bool hdr_ready = true;
-uint32_t hdr_w, hdr_h;
+int clears, blits, scales, barriers, hdr_calls, sdr_calls, hdr_barriers;
+bool hdr_ready = true, sdr_ready = true;
+uint32_t hdr_w, hdr_h, sdr_w, sdr_h;
 uint32_t scale_w, scale_h;
 PresentRect drawn;
 const int* drawn_crop;
@@ -68,6 +69,12 @@ VkImage framegen_hdr(int, VkImageView view, uint32_t, uint32_t, const int* crop,
     ++hdr_calls; hdr_w = w; hdr_h = h;
     return hdr_ready ? 101 : VK_NULL_HANDLE;
 }
+VkImage framegen_pq_sdr(int, VkImageView view, uint32_t, uint32_t, const int* crop, uint32_t w, uint32_t h) {
+    CHECK(view == (filtered ? 117u : 7u));
+    if (filtered) CHECK(crop == nullptr);
+    ++sdr_calls; sdr_w = w; sdr_h = h;
+    return sdr_ready ? 102 : VK_NULL_HANDLE;
+}
 VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*, uint32_t w, uint32_t h) {
     ++scales; scale_w = w; scale_h = h;
     return filtered ? 99 : VK_NULL_HANDLE;
@@ -85,7 +92,7 @@ void expect(VkImage src, uint32_t sw, uint32_t sh, const int* crop, uint32_t dw,
     Host h{with_callback ? aspect_callback : nullptr}; host = with_host ? &h : nullptr;
     logical_aspect = aspect; filtered = filter;
     dev.swap_extent = {dw, dh};
-    clears = blits = scales = barriers = hdr_calls = hdr_barriers = 0;
+    clears = blits = scales = barriers = hdr_calls = sdr_calls = hdr_barriers = 0;
     actual_present(src, sw, sh, crop, 7);
     CHECK(blits == 1 && scales == 1);
     CHECK(drawn.x == want.x && drawn.y == want.y && drawn.w == want.w && drawn.h == want.h);
@@ -94,10 +101,14 @@ void expect(VkImage src, uint32_t sw, uint32_t sh, const int* crop, uint32_t dw,
     CHECK(clears == int(bars) && barriers == int(bars));
     const bool hdr_attempted = dev.hdr && !present_native_pq.load();
     const bool hdr_emitted = hdr_attempted && hdr_ready;
-    CHECK(hdr_calls == int(hdr_attempted) && hdr_barriers == int(hdr_emitted));
+    const bool sdr_attempted = !dev.hdr && present_game_pq.load();   // (the game's PQ picture on an SDR window)
+    const bool sdr_emitted = sdr_attempted && sdr_ready;
+    CHECK(hdr_calls == int(hdr_attempted) && sdr_calls == int(sdr_attempted));
+    CHECK(hdr_barriers == int(hdr_emitted || sdr_emitted));
     if (hdr_attempted) CHECK(hdr_w == want.w && hdr_h == want.h);
-    CHECK(drawn_source == (hdr_emitted ? 101 : filter ? 99 : src));
-    CHECK(drawn_crop == (hdr_emitted || filter ? nullptr : crop));
+    if (sdr_attempted) CHECK(sdr_w == want.w && sdr_h == want.h);
+    CHECK(drawn_source == (hdr_emitted ? 101 : sdr_emitted ? 102 : filter ? 99 : src));
+    CHECK(drawn_crop == (hdr_emitted || sdr_emitted || filter ? nullptr : crop));
 }
 int main() {
     const float wide = 43.0f / 18.0f;
@@ -122,13 +133,20 @@ int main() {
         hdr_ready = true; present_native_pq = true; // Native PQ bypasses conversion.
         expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
         present_native_pq = false; dev.hdr = false;
+        present_game_pq = true; // The game's PQ picture for an SDR window is converted back to SDR.
+        expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
+        sdr_ready = false; // Converter failure retains the normal source/filter and the same fitted rectangle.
+        expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
+        sdr_ready = true; dev.hdr = true; // An HDR10 window never takes the SDR conversion.
+        expect(3, 4096, 2160, crop, 1280, 720, wide, {0, 92, 1280, 536}, filter);
+        present_game_pq = false; dev.hdr = false;
     }
     // Startup has no game image: one full clear, then the window-sized overlay.
     Host h{aspect_callback}; host = &h; logical_aspect = wide;
     dev.swap_extent = {1600, 1000}; clears = blits = scales = barriers = 0;
     actual_present(0, 1600, 1000, nullptr, 0);
     CHECK(clears == 1 && blits == 0 && scales == 0 && barriers == 0);
-    std::puts("PASS: host aspect, crop, normal/generated frames, filter targets, bars and restore");
+    std::puts("PASS: host aspect, crop, normal/generated frames, filter targets, bars, restore and the PQ picture on an SDR window");
 }
 '''
     with tempfile.TemporaryDirectory(prefix="present-aspect-") as tmp:
