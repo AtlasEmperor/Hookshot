@@ -1221,6 +1221,63 @@ def shader_census_cmd(romfs, out):
     return PY + [os.path.join(HERE, "shader_census.py"), long_path(romfs), "--out", out]
 
 
+SHADER_LIST = "hookshot_shaders.bin"   # (in the game folder: every shader of the game, nx2/shader_census.py)
+SHADER_LIST_KEY = ".hookshot_shaders_key"   # (beside it: what the shader list there was made from)
+
+
+def shader_list_key(romfs):
+    """What the shader list is made from: shader_census.py, its zstandard and the archives it reads.
+    An archive counts by its name, size and write time, as gen_print vouches for the lifted C.
+    None when an archive cannot be looked at."""
+    import importlib.metadata
+    import shader_census
+    h = hashlib.sha1(usedforsecurity=False)
+    try:
+        with open(os.path.join(HERE, "shader_census.py"), "rb") as f:
+            h.update(hashlib.sha1(f.read(), usedforsecurity=False).digest())
+        try:
+            h.update(importlib.metadata.version("zstandard").encode())
+        except importlib.metadata.PackageNotFoundError:
+            h.update(b"no zstandard")
+        root = long_path(romfs)
+        for path in [os.path.join(root, "Pack", "ZsDic.pack.zs")] + list(shader_census.archives(root)):
+            st = os.stat(path)
+            h.update(("%s %d %d\n" % (os.path.relpath(path, root).replace(os.sep, "/"), st.st_size, st.st_mtime_ns)).encode())
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def file_print(path):
+    """A file's size and write time: a file rewritten since then no longer matches."""
+    st = os.stat(path)
+    return "%d %d" % (st.st_size, st.st_mtime_ns)
+
+
+def shader_list_kept(romfs, out):
+    """True when the shader list in out was made from these game files, as its key says: it is kept as it is.
+    Otherwise its key goes, so that a list the census then leaves cut short is never vouched for."""
+    seed, stamp = os.path.join(out, SHADER_LIST), os.path.join(out, SHADER_LIST_KEY)
+    key = shader_list_key(romfs)
+    try:
+        with open(stamp) as f:
+            if key is not None and f.read().split() == [key, *file_print(seed).split()]:
+                return True
+    except OSError:
+        pass
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(stamp)
+    return False
+
+
+def vouch_shader_list(romfs, out):
+    """The key of the shader list the census just made in out, read by shader_list_kept at the next build"""
+    seed, key = os.path.join(out, SHADER_LIST), shader_list_key(romfs)
+    if key is not None and os.path.isfile(seed):
+        with open(os.path.join(out, SHADER_LIST_KEY), "w") as f:
+            f.write("%s %s\n" % (key, file_print(seed)))
+
+
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 
 
@@ -1867,8 +1924,12 @@ def main(a=None):
         place_fsr_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
+    if shader_list_kept(romfs, out):
+        print("the shader list was made from these game files before: making it again is skipped", flush=True)
+    elif run(shader_census_cmd(romfs, os.path.join(out, SHADER_LIST)), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    else:
+        vouch_shader_list(romfs, out)
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")
