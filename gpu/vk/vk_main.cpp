@@ -1013,7 +1013,7 @@ bool started_up() {
     }
     return true;
 }
-// (the window's surface made: the presents' own queue kept where its family can present to it, create_device)
+// (the window's surface made: the presents' own queue kept where its family can present to it, make_device)
 static void choose_present_queue() {
     if (!dev.present_queue) return;
     VkBool32 ok = VK_FALSE;
