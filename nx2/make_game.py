@@ -919,6 +919,17 @@ def prune_object_cache(work):
     return kept
 
 
+def keep_build_files_variable():
+    """HOOKSHOT_KEEP_BUILD_FILES as it decides: True to keep all the build files, False for 0, None when it is unset or empty."""
+    value = os.environ.get("HOOKSHOT_KEEP_BUILD_FILES", "")
+    return None if value == "" else value != "0"
+
+
+def keep_build_files(given):
+    """Whether this build keeps all its build files: the flag given (either form), else HOOKSHOT_KEEP_BUILD_FILES."""
+    return given if given is not None else keep_build_files_variable() is True
+
+
 def clear_folder(path):
     """(issue 1354) A folder this build makes again from nothing (the game's code, exefs): gone before it is made. rmtree with
     ignore_errors left it behind whenever a file in it was held (an antivirus scan, an explorer window, a game still closing), and the
@@ -1507,6 +1518,9 @@ def parse_args():
     p.add_argument("--fetch-fsr-runtime", action="store_true",
                    help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
     p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
+    p.add_argument("--keep-build-files", action=argparse.BooleanOptionalAction,
+                   help="keep all the build files after the build, the translated code too, or only this build's compiled objects "
+                        "(not given: HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)")
     a = p.parse_args()
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
@@ -1975,12 +1989,17 @@ def main(a=None):
         # again, an hour and more on many PCs (issue 1287, "updates rebuild everything"), where the update changes a few. The next
         # update translates again (minutes) and compiles only what changed. The builder's Free up space lets them go too.
         # HOOKSHOT_KEEP_BUILD_FILES=1 keeps everything, as before)
-        if os.environ.get("HOOKSHOT_KEEP_BUILD_FILES", "0") in ("", "0"):
+        if not keep_build_files(getattr(a, "keep_build_files", None)):
             kept = prune_object_cache(work)
             for sub in ("sa", "probe"):
                 shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
-            print("the build files in %s were deleted but this build's compiled objects (%d MB), so that an update compiles only what "
-                  "changed (HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)" % (work, kept >> 20), flush=True)
+            left = [os.path.join(work, sub) for sub in ("sa", "probe") if os.path.exists(os.path.join(work, sub))]
+            if left:
+                print("the build files in %s could not all be deleted (a file in use): the next build that does not keep its build "
+                      "files deletes them" % ", ".join(left), flush=True)
+            else:
+                print("the build files in %s were deleted but this build's compiled objects (%d MB), so that an update compiles only what "
+                      "changed (HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)" % (work, kept >> 20), flush=True)
     total_seconds = time.time() - STARTED
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
                             kind="update" if a.update else "build")
