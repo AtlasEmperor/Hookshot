@@ -69,7 +69,7 @@ HLE(_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE) {
 /* (hookshot) the Insert menu's HDR set to Native on an HDR10 swapchain: an HDR10 display (format 1, which makes the game present PQ
    codes in 10 bits) of the menu's peak; otherwise SDR, as a desktop window is */
 HLE(_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE) {
-    const int native = rx_option(HOS_OPT_HDR_NATIVE, 0);
+    const int native = rx_option(HOS_OPT_HDR_STATUS, 0);
     *(uint8_t *)GP(ARG(0)) = (uint8_t)native;
     if (ARG(1)) G32(ARG(1)) = native ? 1 : 0;
     if (ARG(2)) *(uint16_t *)GP(ARG(2)) = native ? (uint16_t)rx_option(HOS_OPT_HDR_PEAK, 1000) : 0;

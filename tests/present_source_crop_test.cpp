@@ -1,5 +1,6 @@
 // Production consumers inserted by test_present_source_crop.py; no GPU or game data.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <climits>
 #include <condition_variable>
@@ -24,15 +25,15 @@ constexpr int kMaxMult = 8;
 struct { int framegen = 2, hdr_white = 200, hdr_peak = 1000; } opts;
 struct { bool push_descriptor = true; std::mutex present_mu; } dev;
 constexpr bool vkCmdPushDescriptorSetKHR = true;
-constexpr uint32_t HDR_ENCODE_COMP_SPV[] = {0};
+constexpr uint32_t HDR_ENCODE_COMP_SPV[] = {0}, PQ_TO_SDR_COMP_SPV[] = {0};
 bool init_scale() { std::abort(); }
 bool make_pipe(Pipe&, const uint32_t*, size_t, std::initializer_list<VkDescriptorType>, int) { std::abort(); }
-void logf(const char*) { std::abort(); }
+void logf(const char*, ...) { std::abort(); }
 void device_wait_idle_locked() { std::abort(); }
 void drop_img(Img&) { std::abort(); }
 bool make_img(Img&, uint32_t, uint32_t, VkFormat, VkImageUsageFlags) { std::abort(); }
 void to_general(VkCommandBuffer, VkImage) { std::abort(); }
-float hdr_uv[4]{};
+float hdr_uv[4]{}, sdr_uv[4]{};
 int blits = 0, clears = 0, initializations = 0, sizes = 0, dispatches = 0, copies = 0;
 uint32_t allocated_w = 0, allocated_h = 0;
 namespace fsr3fi { bool wanted = false; bool frames_wanted() { return wanted; } }
@@ -67,6 +68,7 @@ void pass(VkCommandBuffer, const Pipe& p, std::initializer_list<std::pair<VkImag
     ++dispatches;
     if (&p == &fg.copy) { CHECK(bytes == sizeof copy_pc); std::memcpy(copy_pc, pc, bytes); }
     if (&p == &hdr.pipe) { CHECK(bytes == 32); std::memcpy(hdr_uv, pc, sizeof hdr_uv); }
+    if (&p == &pq_sdr.pipe) { CHECK(bytes == 20); std::memcpy(sdr_uv, pc, sizeof sdr_uv); }
 }
 void vkCmdCopyImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
                     uint32_t count, const VkImageCopy* c) {
@@ -122,6 +124,15 @@ void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, ui
     if (valid) {
         CHECK(hdr_uv[0] == x / float(sw) && hdr_uv[1] == y / float(sh));
         CHECK(hdr_uv[2] == (x + w) / float(sw) && hdr_uv[3] == (y + h) / float(sh));
+    }
+    // The same for the PQ to SDR consumer.
+    pq_sdr.init = true; pq_sdr.failed = false; pq_sdr.w = 1920; pq_sdr.h = 1080; pq_sdr.out.image = 88;
+    const int before_sdr = dispatches;
+    CHECK(framegen_pq_sdr(nullptr, 1, sw, sh, crop, 1920, 1080) == (valid ? 88 : VK_NULL_HANDLE));
+    CHECK(dispatches == before_sdr + int(valid));
+    if (valid) {
+        CHECK(sdr_uv[0] == x / float(sw) && sdr_uv[1] == y / float(sh));
+        CHECK(sdr_uv[2] == (x + w) / float(sw) && sdr_uv[3] == (y + h) / float(sh));
     }
 }
 int main() {

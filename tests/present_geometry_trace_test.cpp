@@ -21,6 +21,7 @@ struct VkClearColorValue { float r, g, b, a; };
 struct VkImageSubresourceRange { int aspect, mip, levels, layer, layers; };
 struct { struct { uint32_t width = 1720, height = 720; } swap_extent; bool hdr = false; } dev;
 std::atomic<bool> present_native_pq{false};
+std::atomic<bool> present_game_pq{false};
 struct Host { float (*aspect_ratio)(); };
 float ratio = 43.0f / 18.0f;
 int aspect_calls = 0;
@@ -29,8 +30,8 @@ Host h{aspect_callback}; Host* host = &h;
 struct { int upscale = 0, sharpness = 0, framegen = 0; } opts;
 std::atomic<uint32_t> present_kind{0};
 bool scaled = false;
-bool encoded = false;
-int hdr_calls = 0;
+bool encoded = false, decoded = false;
+int hdr_calls = 0, sdr_calls = 0;
 int blits = 0, clears = 0;
 PresentRect drawn{};
 std::vector<std::string> messages;
@@ -43,6 +44,9 @@ void full_barrier(int) {}
 VkImageView framegen_scaled_view() { return 19; }
 VkImage framegen_hdr(int, VkImageView, uint32_t, uint32_t, const int*, uint32_t, uint32_t) {
     ++hdr_calls; return encoded ? 29 : VK_NULL_HANDLE;
+}
+VkImage framegen_pq_sdr(int, VkImageView, uint32_t, uint32_t, const int*, uint32_t, uint32_t) {
+    ++sdr_calls; return decoded ? 31 : VK_NULL_HANDLE;
 }
 VkImage framegen_scale(int, VkImageView, VkImage, uint32_t, uint32_t, const int*, uint32_t, uint32_t) { return scaled ? 9 : 0; }
 void blit_crop_to_rect(int, VkImage, uint32_t, uint32_t, const int*, VkImage, int, PresentRect rect) { ++blits; drawn = rect; }
@@ -103,6 +107,13 @@ int main(int argc, char** argv) {
     const int before_native_pq = hdr_calls;
     present(1, 4096, 2160, crop); CHECK(hdr_calls == before_native_pq);
     dev.hdr = false; present_native_pq = false; encoded = false;
+    present_game_pq = true; decoded = true;   // The game's PQ picture on an SDR window is decoded to SDR.
+    const int before_decoded = sdr_calls;
+    present(1, 4096, 2160, crop); CHECK(sdr_calls == before_decoded + 1);
+    if (enabled) CHECK(messages.back().find("route=hdr") != std::string::npos);
+    decoded = false; present(1, 4096, 2160, crop);   // A converter failure keeps the scaled picture.
+    if (enabled) CHECK(messages.back().find("route=scaled") != std::string::npos);
+    present_game_pq = false;
     opts.framegen = 2; present_kind = 1; present(1, 2560, 1440);
     if (enabled) CHECK(messages.back().find("kind=made") != std::string::npos && messages.back().find("framegen-request=2") != std::string::npos);
     const size_t n = messages.size();

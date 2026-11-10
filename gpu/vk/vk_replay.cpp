@@ -48,6 +48,7 @@
 #include "vk_xfer.h"
 #include "vk_present_rect.h"
 #include "vk_present_trace.h"
+#include "queued_pq.h"
 
 #include "vk_internal.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -2941,6 +2942,8 @@ bool skip_pq_picture(const char* diagnostic, bool& told) {
     if (!told) told = true, logf("vk: HDR: %s skips PQ10 pictures; it records SDR ones", diagnostic);
     return true;
 }
+queued_pq::Answer hdr10_answer;               // (what the game was last told of its display: the option HOS_OPT_HDR_STATUS)
+std::atomic<bool> present_game_pq{false};     // (do_present: the game drew the picture as PQ, whatever the swapchain: present_image converts it for an SDR one)
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 struct PendingShot {
     bool on = false;
@@ -2997,9 +3000,13 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         if (tex) src = tex->image, sw = tex->width, sh = tex->height;
         // (the Insert menu's HDR set to Native: the game, told its display is HDR10, presents PQ codes in RGB10A2 (vk
         // A2B10G10R10); that picture goes to the HDR10 swapchain as it is, not through the SDR-to-HDR pass)
-        present_native_pq.store(tex && dev.hdr && opts.hdr == 2 && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                                std::memory_order_relaxed);
-        if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr || wide_sides_possible())) {   // (and ultrawide's menu sides)
+        const bool rgb10a2 = tex && tex->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+        present_native_pq.store(dev.hdr && opts.hdr == 2 && rgb10a2, std::memory_order_relaxed);
+        // (a game told HDR10 draws PQ until it asks again: present_image converts that picture where the swapchain is SDR, as
+        // it stands after the swapchain is made again there)
+        const bool game_pq = hdr10_answer.picture_is_pq(rgb10a2);
+        present_game_pq.store(game_pq, std::memory_order_relaxed);
+        if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr || game_pq || wide_sides_possible())) {   // (and ultrawide's menu sides)
             // Keep the sampled view with the same cached image as the direct present, before advancing its age.
             direct_view = texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample);
             tex->last_frame = texture_frame_no();
@@ -3591,7 +3598,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     image_barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     const PresentAspect aspect{src && host && host->aspect_ratio ? host->aspect_ratio() : 0.0f};
     const PresentRect rect = present_rect(sw, sh, crop, dev.swap_extent.width, dev.swap_extent.height, aspect);
-    [[maybe_unused]] uint32_t trace_route = 0; // direct; 1 scaled, 2 clear, 3 HDR conversion
+    [[maybe_unused]] uint32_t trace_route = 0; // direct; 1 scaled, 2 clear, 3 conversion (HDR10, or PQ to SDR)
     const bool has_bars = rect.x || rect.y || rect.w != dev.swap_extent.width || rect.h != dev.swap_extent.height;
     if (has_bars) {
         const VkClearColorValue black{0.0f, 0.0f, 0.0f, 1.0f};
@@ -3606,10 +3613,16 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         ? (scaled ? framegen_hdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h)
                   : framegen_hdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
         : VK_NULL_HANDLE;
-    if (hdr_image) {
+    // (the game's PQ picture for an SDR window: back to SDR, copied in as the HDR one is)
+    const VkImage sdr_image = !dev.hdr && src && view && present_game_pq.load(std::memory_order_relaxed)
+        ? (scaled ? framegen_pq_sdr(f.cmd, framegen_scaled_view(), rect.w, rect.h, nullptr, rect.w, rect.h)
+                  : framegen_pq_sdr(f.cmd, view, sw, sh, crop, rect.w, rect.h))
+        : VK_NULL_HANDLE;
+    const VkImage converted = hdr_image ? hdr_image : sdr_image;
+    if (converted) {
         trace_route = 3;
         full_barrier(f.cmd);
-        blit_crop_to_rect(f.cmd, hdr_image, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
+        blit_crop_to_rect(f.cmd, converted, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
     } else if (scaled) {
         trace_route = 1;
         blit_crop_to_rect(f.cmd, scaled, rect.w, rect.h, nullptr, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, rect);
@@ -4306,6 +4319,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
         if (id == HOS_OPT_CHEAT_SPEED) return menu_link_speed();
         if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
+        if (id == HOS_OPT_HDR_STATUS) return hdr10_answer.give(dev.hdr && opts.hdr == 2);
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
