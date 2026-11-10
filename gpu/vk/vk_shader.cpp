@@ -1071,6 +1071,8 @@ std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
 // file, and still kept programs to the prediction (program_cache_each). Without them a first start's prediction saw none of the
 // programs the state list's notes name, which its own preparation had just read in: "predicted 0 pipelines" on every new build
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_taken;
+// (every record of the file, none taken out: what disk_records lists again when a device rebuild empties the programs)
+std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_known;
 FILE* disk_out = nullptr;
 // (the records' heads, in the file's order, in hookshot_programs.idx beside it: see disk_init)
 FILE* disk_idx = nullptr;
@@ -1299,6 +1301,7 @@ void disk_init() {
         disk_in = disk_out ? fopen(path.c_str(), "rb") : nullptr;
         disk_path = path;
         disk_on = disk_out != nullptr && disk_in != nullptr;
+        disk_known = disk_records;
         logf("vk: program cache %s: %zu program keys kept, %lld KB", path.c_str(), disk_records.size(), (long long)(good >> 10));
     }();
     disk_opened.store(true, std::memory_order_release);
@@ -1313,7 +1316,7 @@ void disk_reopen() {
             if (*f) fclose(*f);
             *f = nullptr;
         }
-        disk_records.clear(), disk_taken.clear();
+        disk_records.clear(), disk_taken.clear(), disk_known.clear();
         disk_on = false;
     }
     disk_opened.store(false);
@@ -1476,7 +1479,9 @@ void program_cache_save(const Program& p, const std::vector<std::vector<uint32_t
         fflush(disk_idx);
     }
     // (the precompile's: nothing holds them but the file, and the game starts on them at once)
-    if (disk_listing) disk_records[p.key].push_back({at + 16, o.size(), (uint32_t)((p.compute ? 1 : 0) | (p.mesh ? 2 : 0) | (p.fallback ? 4 : 0))});
+    const DiskRecord record{at + 16, o.size(), (uint32_t)((p.compute ? 1 : 0) | (p.mesh ? 2 : 0) | (p.fallback ? 4 : 0))};
+    if (disk_listing) disk_records[p.key].push_back(record);
+    disk_known[p.key].push_back(record);
 }
 
 /// The kept variants of key read from the file (in: a handle on it, used under mu when given) and made ready, to variants
@@ -2868,6 +2873,9 @@ void release() {
             if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
         }
     programs.clear();
+    std::lock_guard dk(disk_mu);   // (each program of the file read back at its next use, this session's too)
+    disk_records = disk_known;
+    disk_taken.clear();   // (every record listed again: none offered to the prediction twice)
 }
 bool rebuild() {
     disk_reopen();
