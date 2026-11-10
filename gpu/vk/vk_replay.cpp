@@ -40,6 +40,7 @@
 #include "vk_gprof.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
+#include "vk_debug.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
 #include "vk_state.h"
@@ -399,6 +400,7 @@ NvnState state;
 // bench) keep the one above. RX_VK_QUEUE_STATE=0: one for all of them, as before.)
 std::unordered_map<uint64_t, NvnState> qstates;
 NvnState* cur_state = &state;
+uint64_t replay_queue = 0;   // (the queue selected below, including when queue states are shared)
 bool queue_state_on() {
     static const bool v = !getenv("RX_VK_QUEUE_STATE") || atoi(getenv("RX_VK_QUEUE_STATE")) != 0;
     return v;
@@ -406,6 +408,7 @@ bool queue_state_on() {
 /// The state the replay goes on with: its queue's. (The draw path's caches made afresh: they are keyed on the state's
 /// counters, which the queues' states share no order of.)
 void use_queue_state(uint64_t queue) {
+    replay_queue = queue;
     NvnState* s = &state;
     if (queue && queue_state_on()) {
         auto it = qstates.find(queue);
@@ -826,11 +829,15 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (flag_written) guest_cpu_write(c.addr + 8, rec + 1, 8);
             else guest_cpu_write(c.addr, rec, sizeof rec);
             memory_cpu_owned(host->gpu_guest(c.addr), sizeof rec);   // (vk_memory.cpp: kept out of the mirrors' write-backs)
+            if (samples) debug_samples_report(presents_now, replay_queue, c.addr, rec[0], !flag_written);
             break;
         }
         case NOP_RESET_COUNTER: {
             const auto c = payload<nvn_p_counter>(a, avail);
-            if (c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED) s.samples_passed = 0;
+            if (c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
+                s.samples_passed = 0;
+                if (!worker) debug_samples_reset(replay_queue);
+            }
             break;
         }
         case NOP_COPY_B2B: {
@@ -3004,6 +3011,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
+        debug_present(presents_now);
         wide_sides_tick();
         if (presents == 1) hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the
@@ -4208,6 +4216,7 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
 
 bool replay_start() {
     menu_init();
+    debug_settings_init(0, 0);   // (the first call counts: the environment overrides apply even where the menu is absent)
     if (!memory_init() || !vma_init(instance_proc())) return false;
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
