@@ -145,7 +145,11 @@ bool create_instance() {
     return true;
 }
 
-bool pick_device() {
+} // namespace
+
+/// The GPU the GPU device row asks for (RX_VK_DEVICE over it; Auto: the best one), null when no GPU has Vulkan 1.3.
+/// On a first start, the Quality preset for its memory is taken before it is returned (menu_first_start_for_gpu)
+VkPhysicalDevice pick_device() {
     menu_init();
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(dev.instance, &n, nullptr);
@@ -206,20 +210,27 @@ bool pick_device() {
     }
     if (best < 0) {
         logf("vk: no Vulkan 1.3 GPU");
-        return false;
+        return VK_NULL_HANDLE;
     }
-    dev.physical = all[best];
-    vkGetPhysicalDeviceProperties(dev.physical, &dev.props);
-    vkGetPhysicalDeviceMemoryProperties(dev.physical, &dev.memory);
-    menu_first_start_for_gpu(dev.props, dev.memory);   // (no options yet: the preset for this card's memory)
-    return true;
+    VkPhysicalDeviceProperties chosen_props;
+    vkGetPhysicalDeviceProperties(all[best], &chosen_props);
+    VkPhysicalDeviceMemoryProperties chosen_memory;
+    vkGetPhysicalDeviceMemoryProperties(all[best], &chosen_memory);
+    menu_first_start_for_gpu(chosen_props, chosen_memory);   // (no options yet: the preset for this card's memory)
+    return all[best];
 }
 
-bool create_device() {
+/// A device on gpu, with what the renderer uses of its extensions and features (d: every fact, the VkDevice included). It
+/// reads nothing of the device in use: a rebuild makes it while the old one still runs, and adopts it once that one is gone
+bool make_device(VkPhysicalDevice gpu, DeviceFacts& d) {
+    d = DeviceFacts{};
+    d.physical = gpu;
+    vkGetPhysicalDeviceProperties(gpu, &d.props);
+    vkGetPhysicalDeviceMemoryProperties(gpu, &d.memory);
     uint32_t n = 0;
-    vkEnumerateDeviceExtensionProperties(dev.physical, nullptr, &n, nullptr);
+    vkEnumerateDeviceExtensionProperties(d.physical, nullptr, &n, nullptr);
     std::vector<VkExtensionProperties> exts(n);
-    vkEnumerateDeviceExtensionProperties(dev.physical, nullptr, &n, exts.data());
+    vkEnumerateDeviceExtensionProperties(d.physical, nullptr, &n, exts.data());
     std::vector<const char*> want = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     auto optional = [&](const char* name, bool& flag) {
         flag = has_extension(exts, name);
@@ -248,37 +259,37 @@ bool create_device() {
         if (const char* e = getenv("RX_VK_FORCE_MESH_FALLBACK")) v = atoi(e) != 0 ? 2 : v;
         return v >= 0 && v <= 2 ? v : 0;
     }();
-    if (mesh_mode == 2) dev.mesh_shader = false;
-    else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, dev.mesh_shader);
-    optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev.external_memory_host);
-    optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, dev.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
-    if (dev.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, dev.dma_buf_import);
-    optional(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, dev.pipeline_library);
-    if (dev.pipeline_library) optional(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, dev.graphics_pipeline_library);
-    optional(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, dev.custom_border_color);
-    optional(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME, dev.dynamic_state3);
-    optional(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, dev.depth_clip_control);
-    optional(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, dev.null_descriptor);
-    optional(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, dev.index_uint8);
-    optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev.push_descriptor);
-    optional(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, dev.conditional_rendering);
-    optional(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, dev.provoking_vertex);
-    optional(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, dev.vertex_divisor);
-    optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
-    optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
-    optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
+    if (mesh_mode == 2) d.mesh_shader = false;
+    else optional(VK_EXT_MESH_SHADER_EXTENSION_NAME, d.mesh_shader);
+    optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, d.external_memory_host);
+    optional(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, d.external_memory_fd);   // (guest memory as udmabufs: vk_memory.cpp import_dma_buf)
+    if (d.external_memory_fd) optional(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, d.dma_buf_import);
+    optional(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, d.pipeline_library);
+    if (d.pipeline_library) optional(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, d.graphics_pipeline_library);
+    optional(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME, d.custom_border_color);
+    optional(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME, d.dynamic_state3);
+    optional(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, d.depth_clip_control);
+    optional(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, d.null_descriptor);
+    optional(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, d.index_uint8);
+    optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, d.push_descriptor);
+    optional(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, d.conditional_rendering);
+    optional(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, d.provoking_vertex);
+    optional(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME, d.vertex_divisor);
+    optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, d.stencil_export);
+    optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, d.memory_budget);
+    optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, d.view_2d_of_3d);
     // (hookshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
     // extension alone, RX_VK_CHECKPOINTS=ext, did not keep it). The race they hide is not found yet.
     // RX_VK_CHECKPOINTS=0: off
     if (!getenv("RX_VK_CHECKPOINTS") || strcmp(getenv("RX_VK_CHECKPOINTS"), "0") != 0)
-        optional(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, dev.checkpoints);
+        optional(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, d.checkpoints);
     // (asked for only: a marker written twice a draw, where the NV ones are not there to hide a race)
-    if (const char* c = getenv("RX_VK_CHECKPOINTS"); !dev.checkpoints && c && strcmp(c, "0") != 0 && strcmp(c, "ext") != 0)
-        optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
-    optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
-    optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
-    optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
+    if (const char* c = getenv("RX_VK_CHECKPOINTS"); !d.checkpoints && c && strcmp(c, "0") != 0 && strcmp(c, "ext") != 0)
+        optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, d.buffer_marker);
+    optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, d.device_fault);
+    optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, d.coop_matrix);
+    optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, d.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
@@ -286,18 +297,18 @@ bool create_device() {
     antilag_device_extensions(want, exts);   // (hookshot: AMD Anti-Lag 2's, vk_antilag.cpp)
 
     // the queue: one family for graphics, compute and transfer
-    vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, nullptr);
+    vkGetPhysicalDeviceQueueFamilyProperties(d.physical, &n, nullptr);
     std::vector<VkQueueFamilyProperties> families(n);
-    vkGetPhysicalDeviceQueueFamilyProperties(dev.physical, &n, families.data());
-    dev.queue_family = UINT32_MAX;
-    for (uint32_t i = 0; i < n && dev.queue_family == UINT32_MAX; i++)
+    vkGetPhysicalDeviceQueueFamilyProperties(d.physical, &n, families.data());
+    d.queue_family = UINT32_MAX;
+    for (uint32_t i = 0; i < n && d.queue_family == UINT32_MAX; i++)
         if ((families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
             (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
-            dev.queue_family = i;
-    if (dev.queue_family == UINT32_MAX) return false;
+            d.queue_family = i;
+    if (d.queue_family == UINT32_MAX) return false;
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    q.queueFamilyIndex = dev.queue_family;
+    q.queueFamilyIndex = d.queue_family;
     q.queueCount = 1;
     q.pQueuePriorities = &priority;
     // (hookshot) The presents on a queue of a compute family of their own, beside the replay's (RX_VK_PRESENT_QUEUE=1 / 0: on /
@@ -316,7 +327,7 @@ bool create_device() {
         VkPhysicalDeviceDriverProperties dp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &dp;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        vkGetPhysicalDeviceProperties2(d.physical, &p2);
         want = false;   // (v2.0.9: off by default with the write-back diff until issue 1161's device lost is placed; was:
         (void)dp;       //  NVIDIA's driver on Windows. RX_VK_PRESENT_QUEUE=1: on)
 #endif
@@ -346,32 +357,32 @@ bool create_device() {
     VkPhysicalDeviceProvokingVertexFeaturesEXT pv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
     void** tail = &f13.pNext;
-    if (dev.mesh_shader) *tail = &mesh, tail = &mesh.pNext;
-    if (dev.null_descriptor) *tail = &robust2, tail = &robust2.pNext;
-    if (dev.index_uint8) *tail = &u8, tail = &u8.pNext;
-    if (dev.dynamic_state3) *tail = &eds3, tail = &eds3.pNext;
-    if (dev.custom_border_color) *tail = &border, tail = &border.pNext;
-    if (dev.depth_clip_control) *tail = &clip, tail = &clip.pNext;
-    if (dev.conditional_rendering) *tail = &cond, tail = &cond.pNext;
-    if (dev.provoking_vertex) *tail = &pv, tail = &pv.pNext;
+    if (d.mesh_shader) *tail = &mesh, tail = &mesh.pNext;
+    if (d.null_descriptor) *tail = &robust2, tail = &robust2.pNext;
+    if (d.index_uint8) *tail = &u8, tail = &u8.pNext;
+    if (d.dynamic_state3) *tail = &eds3, tail = &eds3.pNext;
+    if (d.custom_border_color) *tail = &border, tail = &border.pNext;
+    if (d.depth_clip_control) *tail = &clip, tail = &clip.pNext;
+    if (d.conditional_rendering) *tail = &cond, tail = &cond.pNext;
+    if (d.provoking_vertex) *tail = &pv, tail = &pv.pNext;
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vdiv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
-    if (dev.vertex_divisor) *tail = &vdiv, tail = &vdiv.pNext;
-    if (dev.graphics_pipeline_library) *tail = &gpl, tail = &gpl.pNext;
+    if (d.vertex_divisor) *tail = &vdiv, tail = &vdiv.pNext;
+    if (d.graphics_pipeline_library) *tail = &gpl, tail = &gpl.pNext;
     VkPhysicalDeviceFaultFeaturesEXT fault{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
-    if (dev.device_fault) *tail = &fault, tail = &fault.pNext;
+    if (d.device_fault) *tail = &fault, tail = &fault.pNext;
     VkPhysicalDeviceImage2DViewOf3DFeaturesEXT v2d3d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
-    if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
+    if (d.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
-    if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    if (d.coop_matrix) *tail = &coop, tail = &coop.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     antilag_device_features(tail);   // (AMD Anti-Lag 2's, when its extension is there)
-    vkGetPhysicalDeviceFeatures2(dev.physical, &f);
+    vkGetPhysicalDeviceFeatures2(d.physical, &f);
     descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
-    dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
+    d.view_2d_of_3d = d.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
-    dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
+    d.coop_matrix = d.coop_matrix && coop.cooperativeMatrix &&
                       f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
     // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
     // culling pass 53caac5f faulted the device while a save loaded, about one start in three, and the scene's lighting read garbage
@@ -382,31 +393,31 @@ bool create_device() {
     const bool robust_ok = robust_choice::effective(robust, robust2.robustBufferAccess2, f.features.robustBufferAccess);
     robust2.robustBufferAccess2 = robust_ok ? VK_TRUE : VK_FALSE;
     robust2.robustImageAccess2 = VK_FALSE;
-    dev.null_descriptor = dev.null_descriptor && robust2.nullDescriptor;
+    d.null_descriptor = d.null_descriptor && robust2.nullDescriptor;
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
-    dev.provoking_vertex = dev.provoking_vertex && pv.provokingVertexLast;
-    dev.conditional_rendering = dev.conditional_rendering && cond.conditionalRendering;
-    dev.custom_border_color = dev.custom_border_color && border.customBorderColors && border.customBorderColorWithoutFormat;
-    dev.depth_clip_control = dev.depth_clip_control && clip.depthClipControl;
-    dev.graphics_pipeline_library = dev.graphics_pipeline_library && gpl.graphicsPipelineLibrary;
-    if (dev.graphics_pipeline_library) {
+    d.provoking_vertex = d.provoking_vertex && pv.provokingVertexLast;
+    d.conditional_rendering = d.conditional_rendering && cond.conditionalRendering;
+    d.custom_border_color = d.custom_border_color && border.customBorderColors && border.customBorderColorWithoutFormat;
+    d.depth_clip_control = d.depth_clip_control && clip.depthClipControl;
+    d.graphics_pipeline_library = d.graphics_pipeline_library && gpl.graphicsPipelineLibrary;
+    if (d.graphics_pipeline_library) {
         VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT lp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &lp;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        dev.graphics_pipeline_library = lp.graphicsPipelineLibraryFastLinking != VK_FALSE;
+        vkGetPhysicalDeviceProperties2(d.physical, &p2);
+        d.graphics_pipeline_library = lp.graphicsPipelineLibraryFastLinking != VK_FALSE;
     }
-    dev.eds3_polygon = dev.dynamic_state3 && eds3.extendedDynamicState3PolygonMode;
-    dev.eds3_clamp = dev.dynamic_state3 && eds3.extendedDynamicState3DepthClampEnable;
-    dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
+    d.eds3_polygon = d.dynamic_state3 && eds3.extendedDynamicState3PolygonMode;
+    d.eds3_clamp = d.dynamic_state3 && eds3.extendedDynamicState3DepthClampEnable;
+    d.eds3_blend = d.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
-    dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
+    d.eds3_a2c = d.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
     // (no update-after-bind descriptors are used: never enabled, so robustBufferAccess needs no robustBufferAccessUpdateAfterBind,
     // VUID-VkDeviceCreateInfo-robustBufferAccess-10247)
     f12.descriptorBindingUniformBufferUpdateAfterBind = f12.descriptorBindingStorageBufferUpdateAfterBind = VK_FALSE;
     f12.descriptorBindingUniformTexelBufferUpdateAfterBind = f12.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_FALSE;
-    dev.vk12 = f12;
-    dev.vk13 = f13;
+    d.vk12 = f12;
+    d.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane
         // shuffles of OoT's networks and the lane masks of its mesh programs depend on it. NVIDIA's GPUs have no other size; AMD's
         // default to 64 where they like, and the networks' output came out as coloured noise (Hookshot issues 10 and 14)
@@ -417,80 +428,81 @@ bool create_device() {
         sg.pNext = &sc;
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &sg;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        vkGetPhysicalDeviceProperties2(d.physical, &p2);
         const bool pin = f13.subgroupSizeControl && sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 && !getenv("RX_VK_NO_SUBGROUP_PIN");
-        dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
-        dev.subgroup_size = sg.subgroupSize;
-        dev.subgroup_max = sc.maxSubgroupSize > sg.subgroupSize ? sc.maxSubgroupSize : sg.subgroupSize;
-        dev.driver_id = drv.driverID;
+        d.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
+        d.subgroup_size = sg.subgroupSize;
+        d.subgroup_max = sc.maxSubgroupSize > sg.subgroupSize ? sc.maxSubgroupSize : sg.subgroupSize;
+        d.driver_id = drv.driverID;
         logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x", sg.subgroupSize, sc.minSubgroupSize, sc.maxSubgroupSize,
-             (unsigned)dev.sg32_stages);
+             (unsigned)d.sg32_stages);
     }
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore) {
         logf("vk: the GPU lacks dynamic rendering, synchronization2 or timeline semaphores");
         return false;
     }
     mesh.multiviewMeshShader = mesh.primitiveFragmentShadingRateMeshShader = VK_FALSE;   // (not used)
-    dev.mesh_shader = dev.mesh_shader && mesh.meshShader && mesh.taskShader;
+    d.mesh_shader = d.mesh_shader && mesh.meshShader && mesh.taskShader;
     // (task and mesh shader counts in pipeline statistics, a feature of their own: RADV has it off on RDNA2, and a query
     // pool made with those counts all the same can hang the GPU)
-    dev.mesh_queries = dev.mesh_shader && mesh.meshShaderQueries;
+    d.mesh_queries = d.mesh_shader && mesh.meshShaderQueries;
     // (hookshot, issue 640) RDNA1 and older GPUs: no mesh shaders, but task and mesh programs run as compute shaders
     // that write their vertices to buffers, drawn through an ordinary graphics pipeline. It needs buffer device addresses.
-    dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
-    if (dev.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
+    d.mesh_fallback = !d.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
+    if (d.mesh_fallback) logf("vk: no mesh shaders: task and mesh programs run as compute shaders (issue 640 fallback)");
     bool task_mesh_fallback = false;
 #ifdef _WIN32
     // Navi 22 can time out on task + mesh draws in the AMD Windows driver (issue 996), and so can Navi 21: on an RX 6800 XT
     // (driver 0x800161) the native path lost the device within minutes at Hyrule Castle's entrance, while the fallback played
     // 25 minutes there with none. Navi 21 is 0x73bf (RX 6800, 6800 XT, 6900 XT); Navi 22 is 0x73df (RX 6700 XT)
-    task_mesh_fallback = dev.props.vendorID == 0x1002 && (dev.props.deviceID == 0x73bf || dev.props.deviceID == 0x73df);
+    task_mesh_fallback = d.props.vendorID == 0x1002 && (d.props.deviceID == 0x73bf || d.props.deviceID == 0x73df);
 #endif
     if (mesh_mode == 1) task_mesh_fallback = false;   // (Native: the card's own mesh shaders for every draw)
     if (const char* e = getenv("RX_VK_TASK_MESH_FALLBACK")) task_mesh_fallback = atoi(e) != 0;
-    dev.task_mesh_fallback = task_mesh_fallback && dev.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
-    if (dev.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
+    d.task_mesh_fallback = task_mesh_fallback && d.mesh_shader && f12.bufferDeviceAddress && !getenv("RX_VK_NO_MESH_FALLBACK");
+    if (d.task_mesh_fallback) logf("vk: task + mesh programs use the compute fallback (RX_VK_TASK_MESH_FALLBACK=0: native)");
     logf("vk: mesh shaders row: %s (%s)", mesh_mode == 2 ? "Compute" : mesh_mode == 1 ? "Native" : "Automatic",
-         dev.mesh_shader ? (dev.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
-                         : dev.mesh_fallback ? "the compute path" : "none");
+         d.mesh_shader ? (d.task_mesh_fallback ? "native, task + mesh draws on the compute path" : "native")
+                       : d.mesh_fallback ? "the compute path" : "none");
     if (robust) logf("vk: robust buffer access %s", robust_ok ? "on" : "not supported");
     f.features.robustBufferAccess = robust_ok ? VK_TRUE : VK_FALSE;   // (off by default: the game's accesses stay in their buffers)
-    dev.features = f.features;
-    dev.sparse_images = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding &&
+    d.features = f.features;
+    d.sparse_images = (families[d.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding &&
                         f.features.sparseResidencyImage2D && !(getenv("RX_VK_SPARSE") && !atoi(getenv("RX_VK_SPARSE")));
-    dev.sparse_buffers = (families[dev.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
+    d.sparse_buffers = (families[d.queue_family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && f.features.sparseBinding;
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
     ci.queueCreateInfoCount = compute_family != UINT32_MAX ? 2 : 1;
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
-    if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
+    if (vkCreateDevice(d.physical, &ci, nullptr, &d.device) != VK_SUCCESS) {
         logf("vk: vkCreateDevice failed");
         return false;
     }
-
-
-    load_device(dev.device);
-    vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
-    dev.present_queue = VK_NULL_HANDLE;
-    dev.present_family = dev.queue_family;
-    if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
-    if (dev.buffer_marker) buffer_markers_init();
-    coopmat_init();
-    reflex_device_created();
-    antilag_device_created();
-    if (dev.push_descriptor) {
+    d.robust_buffers = robust_ok;
+    d.present_family = compute_family != UINT32_MAX ? compute_family : d.queue_family;
+    if (d.push_descriptor) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
         VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
         p2.pNext = &pp;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        dev.max_push_descriptors = pp.maxPushDescriptors;
+        vkGetPhysicalDeviceProperties2(d.physical, &p2);
+        d.max_push_descriptors = pp.maxPushDescriptors;
     }
     return true;
 }
 
-} // namespace
+/// The device made by make_device as the one in use: its commands loaded, its queues taken, what is measured on it measured
+void adopt_device(const DeviceFacts& d) {
+    static_cast<DeviceFacts&>(dev) = d;
+    load_device(dev.device);
+    vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
+    if (dev.present_family != dev.queue_family) vkGetDeviceQueue(dev.device, dev.present_family, 0, &dev.present_queue);
+    if (dev.buffer_marker) buffer_markers_init();
+    coopmat_init();
+    reflex_device_created();
+    antilag_device_created();
+}
 
 /// (hookshot) The UNORM format of an sRGB one (the same bytes, read and written as they are), else the format itself
 VkFormat unorm_of(VkFormat f) {
@@ -1095,7 +1107,10 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         logf("vk: vulkan-1.dll not found");
         return nullptr;
     }
-    if (!create_instance() || !pick_device() || !create_device()) return nullptr;
+    DeviceFacts made;
+    const VkPhysicalDevice gpu = create_instance() ? pick_device() : VK_NULL_HANDLE;
+    if (!gpu || !make_device(gpu, made)) return nullptr;
+    adopt_device(made);
     logf("vk: %s, Vulkan %u.%u, driver %#x; mesh shaders %s, host memory import %s, pipeline libraries %s",
          dev.props.deviceName, VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion),
          dev.props.driverVersion, dev.mesh_shader ? "yes" : "no", dev.external_memory_host ? "yes" : "no",

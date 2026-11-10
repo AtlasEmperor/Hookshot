@@ -16,14 +16,14 @@ DEVICES = {0x73BF: "Navi 21 (RX 6800, 6800 XT, 6900 XT)", 0x73DF: "Navi 22 (RX 6
 def main():
     main_cpp = (ROOT / "gpu/vk/vk_main.cpp").read_text(encoding="utf-8")
     at = main_cpp.index("bool task_mesh_fallback = false;")
-    block = main_cpp[at:main_cpp.index("dev.task_mesh_fallback =", at)]
+    block = main_cpp[at:main_cpp.index("d.task_mesh_fallback =", at)]
     default = re.search(r"#ifdef _WIN32\n(.*?)#endif\n", block, re.S)
     assert default, "the default is no longer Windows-only"
     line = re.search(r"task_mesh_fallback = (.*?);", default.group(1), re.S)
     assert line, "no default for task_mesh_fallback"
     cond = line.group(1)
-    assert "dev.props.vendorID == 0x1002" in cond, "the default is not limited to AMD"
-    ids = {int(x, 16) for x in re.findall(r"dev\.props\.deviceID == (0x[0-9a-fA-F]+)", cond)}
+    assert "d.props.vendorID == 0x1002" in cond, "the default is not limited to AMD"
+    ids = {int(x, 16) for x in re.findall(r"\bd\.props\.deviceID == (0x[0-9a-fA-F]+)", cond)}
     for device, name in DEVICES.items():
         assert device in ids, "%s (0x%04x) is not in the default" % (name, device)
     assert ids == set(DEVICES), "unexpected devices in the default: %s" % sorted(hex(i) for i in ids - set(DEVICES))
