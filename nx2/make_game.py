@@ -373,15 +373,33 @@ def build_id(main):
     return head[0x40:0x60].hex()
 
 
-def check_modules(exefs):
-    """Every module of the exefs is one the tools can read: said here, not as a Python error from the translator"""
+def unreadable_modules(exefs):
+    """The files of the exefs that are not game modules the tools can read (main.npdm and .part files aside), with their first bytes"""
+    bad = []
     for name in os.listdir(exefs):
         if name != "main.npdm" and not name.endswith(".part"):
             with open(os.path.join(exefs, name), "rb") as f:
                 head = f.read(16)
             if head[:4] != b"NSO0":
-                fail("The file %s in this dump is not a game module (it starts %s). Try another dump of the game, or send this message to the "
-                     "Hookshot developers." % (name, head.hex()))
+                bad.append((name, head))
+    return bad
+
+
+def check_modules(exefs):
+    """Every module of the exefs is one the tools can read: said here, not as a Python error from the translator"""
+    bad = unreadable_modules(exefs)
+    if bad:
+        name, head = bad[0]
+        fail("The file %s in this dump is not a game module (it starts %s). Try another dump of the game, or send this message to the "
+             "Hookshot developers." % (name, head.hex()))
+
+
+def kept_copy_readable(kept):
+    """The game's code a folder keeps (.hookshot_exefs) can be built from: its main is there and every module reads"""
+    try:
+        return os.path.isfile(os.path.join(kept, "main")) and not unreadable_modules(kept)
+    except OSError:
+        return False
 
 
 def check_supported_build(exefs):
@@ -1612,6 +1630,9 @@ def main(a=None):
         if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
             with open(good) as f:
                 same = f.read().strip() == stamp
+        if same and not kept_copy_readable(kept):   # (choosing the same .nup again is how a broken copy gets repaired)
+            print("the game's code kept in %s cannot be read: the .nup is read again" % kept, flush=True)
+            same = False
         if same:
             print("the game was read from this .nup before: reading it again is skipped", flush=True)
             shutil.copytree(kept, exefs)

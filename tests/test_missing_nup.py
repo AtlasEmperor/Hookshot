@@ -31,7 +31,7 @@ class MissingNupTests(unittest.TestCase):
         (self.out / "romfs").mkdir(parents=True)
         (self.out / "romfs/asset").write_bytes(b"authored asset")
         (self.out / ".hookshot_exefs").mkdir()
-        (self.out / ".hookshot_exefs/main").write_bytes(b"authored code sentinel")
+        (self.out / ".hookshot_exefs/main").write_bytes(b"NSO0 authored code sentinel")   # (a module header: a copy the build can reuse)
         (self.out / "user/save").mkdir(parents=True)
         (self.out / "user/save/sentinel").write_bytes(b"authored save sentinel")
         (self.out / ".hookshot_romfs").write_text("previous authored package\n", encoding="utf-8")
@@ -132,7 +132,7 @@ class MissingNupTests(unittest.TestCase):
         self.assertIn("reading it again is skipped", text)
         self.assertNotIn("@@error", text)
         self.assertEqual(self.files(), self.before)
-        self.assertEqual((self.work / "exefs/main").read_bytes(), b"authored code sentinel")
+        self.assertEqual((self.work / "exefs/main").read_bytes(), b"NSO0 authored code sentinel")
 
     def test_programming_error_still_uses_unexpected_error_handler(self):
         code, text = self.invoke(RuntimeError("authored unexpected failure"))

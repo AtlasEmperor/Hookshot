@@ -201,6 +201,23 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual((self.work / "exefs/main").read_bytes(),
                          (self.out / ".hookshot_exefs/main").read_bytes())
 
+    def test_same_source_reads_again_over_a_kept_copy_that_cannot_be_read(self):
+        kept = self.out / ".hookshot_exefs"
+        for damage in ("broken", "missing"):
+            with self.subTest(damage=damage):
+                self.extractions = []
+                if damage == "broken":
+                    (kept / "main").write_bytes(b"not a module")
+                else:
+                    (kept / "main").unlink()
+                with self.assertRaises(Prepared):
+                    self.run_to_lift(self.old_nup)
+                self.assertEqual(self.extractions, [self.old_nup])
+                self.assertIn("cannot be read: the .nup is read again", self.output)
+                self.assertEqual((kept / "main").read_bytes(), module_bytes())
+                self.assertEqual(self.marker.read_text(), self.stamp(self.old_nup) + "\n")
+                self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
+
     def test_failed_extraction_preserves_the_previous_cache_and_save(self):
         before = self.cache()
         failure = "nup.py stopped (exit status 1): OSError: [Errno 28] No space left on device"
