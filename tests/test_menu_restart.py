@@ -78,8 +78,7 @@ def function(source, start):
 
 def sources():
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    for row in ('"GPU device", &opts.gpu_device', '"Output resolution", &opts.output_res', '"Profile", &opts.handheld',
-                '"Ultrawide", &opts.ultrawide', '"Robust buffers", &opts.robust'):
+    for row in ('"Output resolution", &opts.output_res', '"Profile", &opts.handheld', '"Ultrawide", &opts.ultrawide'):
         at = menu.find(row)
         if at < 0:
             raise SystemExit("vk_menu.cpp: a row that takes a restart is missing: " + row)
@@ -91,6 +90,12 @@ def sources():
         raise SystemExit("ini_key: the Profile row is not saved as handheld_profile (host/nn_applet.c would not read it)")
     if 'return v ? "Handheld" : "Docked";' not in menu:
         raise SystemExit("vk_menu.cpp: the Profile row does not show Docked and Handheld")
+    # (the GPU device and Robust buffers rows apply while the game runs: the device is made again, vk_device_rebuild.cpp)
+    for row, hint in (('"GPU device", &opts.gpu_device', "hn_gpu"), ('"Robust buffers", &opts.robust', "hn_robust")):
+        at = menu.find(row)
+        entry = menu[at:menu.index("},", at)] if at >= 0 else ""
+        if not re.search(r"%s(,\s*false.*)?$" % hint, entry, re.S):
+            raise SystemExit("vk_menu.cpp: %s is missing, or marked as taking a restart" % row.split(",")[0])
     if "(restart)" in menu:
         raise SystemExit("vk_menu.cpp: a value still says (restart) whatever runs: \"(after restart)\" is added while it differs")
     if '"After restart"' not in menu or "Restart needed: " not in menu:
