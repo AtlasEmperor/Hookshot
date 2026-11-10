@@ -139,6 +139,7 @@ Shader::AttributeType attribute_type_of(uint32_t vattr);
 Shader::TextureType handle_texture_type(uint32_t handle);
 void shader_stats(int64_t* translated, int64_t* failed);
 double shader_translate_ms();
+int64_t shader_cache_hits();   // (programs read back from the program cache since the start)
 void program_released(const nvn_prog* p);
 
 } // namespace mkwvk
