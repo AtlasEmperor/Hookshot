@@ -536,7 +536,7 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
     }
 }
 
-bool create_swapchain(uint32_t width, uint32_t height) {
+bool create_swapchain(uint32_t width, uint32_t height, bool hdr_allowed) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev.physical, dev.surface, &caps);
     if (result != VK_SUCCESS) {
@@ -572,7 +572,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // (hookshot) the Insert menu's HDR: a 10-bit HDR10 surface when the display lists one (Windows: "Use HDR" on in its display
     // settings), the picture then written by framegen_hdr. Otherwise the SDR one above, said once
     dev.hdr = false;
-    if (opts.hdr) {
+    if (opts.hdr && hdr_allowed) {
         for (const auto& f : formats)
             if ((f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || f.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32) &&
                 f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT)
@@ -675,6 +675,10 @@ bool create_swapchain(uint32_t width, uint32_t height) {
         dev.swap_rendered.clear();
         dev.swap_images.clear();
         dev.swap_spare = 0;
+    }
+    if (result != VK_SUCCESS && dev.hdr) {   // (the driver refused the HDR10 chain: the SDR one instead, the retired chain gone above)
+        logf("vk: vkCreateSwapchainKHR failed for HDR10 (VkResult %d): trying SDR", (int)result);
+        return create_swapchain(width, height, false);
     }
     if (result != VK_SUCCESS) {
         logf("vk: vkCreateSwapchainKHR failed (VkResult %d, extent %ux%u, format %d, usage %#x, mode %d, images %u)",

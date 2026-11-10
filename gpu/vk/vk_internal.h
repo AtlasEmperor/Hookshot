@@ -292,7 +292,8 @@ void vma_log_heaps();
 void vma_log_image_blocks();   // (the image pools' blocks: what they hold, and their free ranges)
 PFN_vkGetInstanceProcAddr instance_proc();   // vk_main.cpp
 
-bool create_swapchain(uint32_t width, uint32_t height);
+/// hdr_allowed false: the SDR surface even when the display lists an HDR10 one
+bool create_swapchain(uint32_t width, uint32_t height, bool hdr_allowed = true);
 bool replay_start();                          // vk_replay.cpp
 bool precompile_wanted();                     // vk_draw.cpp
 void precompile_run(void (*progress)(size_t done, size_t total));

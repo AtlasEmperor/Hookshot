@@ -48,7 +48,7 @@ constexpr int VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO=1, VK_SUCCESS=0;
 constexpr int VK_PRESENT_MODE_MAILBOX_KHR=1, VK_PRESENT_MODE_IMMEDIATE_KHR=2;
 struct VkSemaphoreCreateInfo { int type; };
 struct Extent { uint32_t width,height; };
-struct Device { int device=1;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;uint32_t swap_spare=0;
+struct Device { int device=1;bool hdr=false;uint64_t swapchain=0;int swap_format=0;Extent swap_extent{};bool swap_mutable=false;uint32_t swap_spare=0;
     std::vector<VkImage> swap_images;std::vector<VkSemaphore> swap_rendered;
     std::atomic<uint64_t> swap_resize{0};std::mutex present_mu; } dev;
 struct { int hdr=0; } opts;   // (the Insert menu's HDR row: present_image remakes the swapchain when it changes)
@@ -97,6 +97,7 @@ void vkDeviceWaitIdle(int) {idle=true;}
 // (vk_replay.cpp's helper: held submits out, then the device idle; the real one also takes the present queue's own lock)
 void device_wait_idle_locked() {queue_flush_locked();vkDeviceWaitIdle(dev.device);}
 void swap_views_drop() {}   // (hookshot: the overlays' views, vk_main.cpp)
+bool create_swapchain(unsigned width,unsigned height,bool hdr_allowed=true);
 bool recreate() {
     uint32_t n=0,width=640,height=480; struct {int format=1;} fmt;
     struct {uint32_t minImageCount=2;} caps;   // (the surface's: present ahead holds images past it, vk_framegen.cpp)
@@ -108,8 +109,13 @@ bool recreate() {
 uint64_t pack(unsigned w,unsigned h) {return (uint64_t(w)<<32)|h;}
 unsigned called_width=0,called_height=0,acquires=0;
 bool preflight_fail=false,stale=false;uint64_t newer_resize=0;
-bool create_swapchain(unsigned width,unsigned height) {
+unsigned sdr_retries=0;bool retry_succeeds=false;
+bool create_swapchain(unsigned width,unsigned height,bool hdr_allowed) {
     called_width=width;called_height=height;
+    if(!hdr_allowed) {   // (the real one: no HDR10 surface; the retry's driver may accept the SDR chain)
+        ++sdr_retries;dev.hdr=false;
+        if(retry_succeeds)create_result=0;
+    }
     if(newer_resize)dev.swap_resize.store(newer_resize);
     if(preflight_fail)return false;
     return recreate();
@@ -178,6 +184,14 @@ int main() {
     if(dev.swap_spare) {std::puts("FAIL: images to spare still counted with no swapchain");return 32;}
     create_result=0;
     if(!recreate() || !dev.swapchain || dev.swap_images.size()!=4)return 16;
+    // An HDR10 chain the driver refuses is asked for again as SDR, once, with no retired chain left to pass on.
+    dev.hdr=true;create_result=-1;retry_succeeds=true;sdr_retries=0;idle=false;
+    if(!recreate() || sdr_retries!=1 || dev.hdr || !dev.swapchain || dev.swap_images.size()!=4)return 29;
+    dev.hdr=true;create_result=-1;retry_succeeds=false;sdr_retries=0;idle=false;
+    if(recreate() || sdr_retries!=1 || dev.swapchain || !live.empty() || !chains.empty())return 30;
+    dev.hdr=true;create_result=0;sdr_retries=0;
+    if(!recreate() || sdr_retries!=0 || !dev.hdr)return 31;
+    dev.hdr=false;
     data_result=1; // VK_INCOMPLETE from the image-data query must not publish a partial chain.
     if(recreate() || dev.swapchain || !live.empty() || !chains.empty())return 17;
     data_result=0;
