@@ -3757,7 +3757,7 @@ static void present_out(uint32_t index, std::unique_lock<std::mutex>& qk) {
     antilag_present();   // (AMD Anti-Lag 2: the frame's present stage)
     // (hookshot) vkQueuePresentKHR blocked a quarter of the display thread's time with frame interpolation at 4x (a 14700K and an
     // RTX 5070 Ti), and with the queue's lock held there the game's main thread waited ~9% of its time and the presentation thread
-    // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp create_device) the presents go
+    // ~15% to submit. With a queue of their own (dev.present_queue, a compute family's: vk_main.cpp make_device) the presents go
     // out with the submits' lock let go: the blit above signals swap_rendered on the replay's queue (submitted already, as a binary
     // semaphore's wait needs). (Waiting for the blit's fence before the present, with the lock let go, was worse.)
     if (dev.present_queue) {

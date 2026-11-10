@@ -1,4 +1,4 @@
-/* Bounds-checked buffer access as the Insert menu's Robust buffers row asks for it (vk_main.cpp's create_device).
+/* Bounds-checked buffer access as the Insert menu's Robust buffers row asks for it (vk_main.cpp's make_device).
    RX_VK_ROBUST, when set, wins over the row. */
 #pragma once
 
