@@ -31,6 +31,7 @@
 #include "vk_menu.h"
 #include "vk_menu_hit.h"
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
+#include "vk_debug.h"   // (the Debug tab's diagnostics rows)
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
@@ -68,6 +69,9 @@ enum MenuTab {
     TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
 };
 
+/// (hookshot) Row::action: what a diagnostics button of the Debug tab's Developer section does (vk_debug.h)
+constexpr signed char kNoAction = 0, kActionRecording = 1, kActionMarkFlash = 2;
+
 struct Row {
     MenuTab tab;
     const char* name;
@@ -84,6 +88,7 @@ struct Row {
                                   // frame generation)
     signed char cheat = -1;   // (a debug tool, on the Debug tab with the tools on: its index in the cheat_ tables, -1 none)
     bool heading = false;     // (a section's title on its tab, not a row: the selection steps over it)
+    signed char action = 0;   // (a diagnostics button, kNoAction for none: confirm does it; never saved, never the preset's)
 };
 /// A row's hints from a table, the value lo first (nullptr: none for that value)
 const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
@@ -709,6 +714,11 @@ MENU_HINTS(hn_pad_layout, 0, "The Switch's order: A on the right, B at the botto
 MENU_HINTS(hn_prompts, 0,
            "Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.")
 
+const char* tx_exposure(int v) {
+    static const char* const t[] = {"Off", "History", "Each reading"};
+    return (unsigned)v <= (unsigned)kDebugExposureEachReading ? t[v] : t[0];
+}
+
 Row rows[] = {
     // Graphics (Reflex, Anti-Lag 2, the Upscaler and the DLSS model only where they run here; HDR's paper white and peak
     // brightness only with HDR on: row_shown)
@@ -891,6 +901,19 @@ Row rows[] = {
     {TAB_DEBUG, "Sampler cache", &opts.sampler_cache, 0, 1, 1, tx_onoff,
      "What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no "
      "lock. Helps while the game streams textures. Applies after restart.", nullptr, true},
+    {TAB_DEBUG, "Occlusion reports", &opts.sample_log, 0, 1, 1, tx_onoff,
+     "Logs the game's occlusion counter reports during a recording you start below. The counters' results do not change.",
+     nullptr, false, true},
+    {TAB_DEBUG, "Exposure history", &opts.exposure_log, 0, kDebugExposureEachReading, 1, tx_exposure,
+     "History keeps the recent exposure readings, for a visual glitch's mark. Each reading also logs them as they come during "
+     "a recording.", nullptr, false, true},
+    {TAB_DEBUG, "Recording", nullptr, 0, 0, 0, nullptr,
+     "Records the reports chosen above until its report or time limit. A recording never starts by itself when the game "
+     "starts. Confirm again to stop it; what it recorded stays in the log.", nullptr, false, true, -1, false,
+     kActionRecording},
+    {TAB_DEBUG, "Mark visual glitch", nullptr, 0, 0, 0, nullptr,
+     "Marks the latest picture in the log, with the recent exposure history, when you see a glitch.", nullptr, false, true,
+     -1, false, kActionMarkFlash},
     // (Restart and Quit stay the table's last two: kRestartRow and kQuitRow count back from its end)
     {TAB_GAMEPLAY, "Restart", nullptr, 0, 0, 0, nullptr,
      "Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B "
@@ -1061,6 +1084,18 @@ const char* cheat_confirm(int i) {
     static const char* const says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
                                                  "Switch", "Open", nullptr};
     return i >= 0 && i < kCheatRows ? says[i] : nullptr;
+}
+/// What a diagnostics button's cell says now: what confirm does, or why it does nothing
+std::string debug_action_text(signed char action) {
+    const DebugState state = debug_state();
+    if (action == kActionMarkFlash)
+        return state.flash_markers ? "Mark (" + std::to_string(state.flash_markers) + " so far)" : "Mark";
+    if (state.recording) return state.samples ? "Stop (" + std::to_string(state.remaining) + " reports left)" : "Stop";
+    return state.samples || state.exposure ? "Start" : "Choose a report above";
+}
+/// What confirm does on a diagnostics button, for its prompt
+const char* debug_action_confirm(signed char action) {
+    return action == kActionMarkFlash ? "Mark" : debug_state().recording ? "Stop" : "Start";
 }
 constexpr int kRows = sizeof rows / sizeof rows[0];
 
@@ -1720,6 +1755,7 @@ constexpr int debug_tools_order[] = {0, 1, 11, 9, 10, 8, 2, 3, 7, 4};
 constexpr DebugGroup debug_groups[] = {{"Player", 0, 5}, {"Travel", 5, 8}, {"Camera & world", 8, 10}};
 constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
 constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
+constexpr float kChoiceArrowsRoom = 68, kButtonCellPad = 60, kButtonCellPadTight = 56;   // (px at scale 1 added to a value cell's text)
 /// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
 /// are on, then the Developer rows; *dev where those start, *dev_head the Developer heading's row (-1 none). Their count
 int debug_rows(int* out, int* dev, int* dev_head) {
@@ -1764,6 +1800,13 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         const float pad = (tight ? 36 : 64) * s;
         if (r.cheat == 9 && age_shown(9))
             return 2 * std::max(ui::size_of(c.f.strong, px, "Kid").x, ui::size_of(c.f.strong, px, "Adult").x) + pad;
+        if (r.action != kNoAction)
+            return ui::size_of(c.f.strong, px, debug_action_text(r.action).c_str()).x + (tight ? kButtonCellPadTight : kButtonCellPad) * s;
+        if (r.value && r.hi - r.lo > r.step) {   // (more than two values: the widest one, and the arrows' room)
+            float widest = 0;
+            for (int v = r.lo; v <= r.hi; v += r.step) widest = std::max(widest, ui::size_of(c.f.strong, px, r.text(v)).x);
+            return widest + kChoiceArrowsRoom * s;
+        }
         if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
         const std::string v = r.cheat == 11 ? "1.25x" : cheat_value(r.cheat);   // (Movement speed: its widest, the cell kept still)
         const char* const says[kCheatRows] = {"", "", "Mark", "Return", "", "", "", "", "Choose map", "Switch", "Edit items", ""};
@@ -1830,7 +1873,11 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         const float width = in_tools ? cell_w[vcol[i]] : std::max(need(r, false), cell_w[two ? 1 : 0]);
         const ImVec2 va(x1 - width, y), vb(x1, y + rh);
         name_cell(c, ImVec2(x0, y), ImVec2(va.x, y + rh), r.name, selected, restart_changed(r));   // (boxed, as on the other tabs)
-        if (r.value) {   // (Debug tools and the Developer rows: values of the options, Off and On)
+        if (r.action != kNoAction) {   // (a diagnostics button)
+            choice_cell(c, va, vb, debug_action_text(r.action), selected, false, false);
+        } else if (r.value && r.hi - r.lo > r.step) {   // (more than two values: the arrows choose, as on the other tabs)
+            choice_cell(c, va, vb, r.text(*r.value), selected, true, true, row_fixed(r.value));
+        } else if (r.value) {   // (Debug tools and the Developer rows: values of the options, Off and On)
             halves_cell(c, va, vb, std::string(r.text(r.lo)).c_str(), std::string(r.text(r.hi)).c_str(), *r.value == r.hi, selected,
                         row_fixed(r.value));
         } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
@@ -1905,6 +1952,7 @@ void draw_options(ui::Ctx& c) {
     ui::Prompt prompt_list[5] = {{ui::kUpDown, "Choose"}, {ui::kLeftRight, "Change"}, {ui::kTabs, "Tabs"}, {ui::kBack, "Close"}};
     int prompts_n = cur_tab == TAB_MOTION ? 3 : 4;
     if (!selr.value) prompt_list[1] = {ui::kConfirm, confirms ? (pending == &selr ? "Confirm" : selr.name) : "Open"};
+    if (selr.action != kNoAction) prompt_list[1] = {ui::kConfirm, debug_action_confirm(selr.action)};
     if (cur_tab == TAB_MOTION) prompt_list[2] = {ui::kBack, "Back"};   // (Esc: to Controls)
     if (selr.cheat >= 0) {   // (a debug tool: Change when Left and Right do something, then what confirm does)
         prompts_n = 1;
@@ -2865,6 +2913,27 @@ void cheat_press(int i, const bool* press, bool& changed) {
         changed = true;
     }
 }
+/// A diagnostics button on confirm: starts or stops the recording, or marks a glitch in the log
+void debug_action_press(signed char action, const bool* press, bool& changed) {
+    if (!press[7]) return;
+    changed = true;
+    if (action == kActionMarkFlash) debug_mark_flash();
+    else if (debug_state().recording) debug_recording_stop();
+    else debug_recording_start();
+}
+/// The Debug tab's diagnostics choices to the controller (vk_debug.h), each change; the first call has the rows take over
+/// the environment's overrides
+void publish_diagnostics() {
+    static int sent_samples = -1, sent_exposure = -1;
+    if (sent_samples < 0) {
+        debug_settings_init(opts.sample_log, opts.exposure_log);
+        const DebugState state = debug_state();
+        opts.sample_log = state.samples, opts.exposure_log = state.exposure;
+    } else if (opts.sample_log != sent_samples || opts.exposure_log != sent_exposure) {
+        debug_settings_set(opts.sample_log, opts.exposure_log);
+    }
+    sent_samples = opts.sample_log, sent_exposure = opts.exposure_log;
+}
 
 void menu_tick() {
     fullscreen_tick();
@@ -3239,6 +3308,7 @@ void menu_tick() {
                 }
             }
         } else if (r.cheat >= 0) cheat_press(r.cheat, press, changed);   // (a debug tool: on the Debug tab itself)
+        else if (r.action != kNoAction) debug_action_press(r.action, press, changed);
         else if (press[7] && is_motion_row(r)) cur_tab = TAB_MOTION, tab_selected[TAB_MOTION] = 0, press[7] = false, changed = true;
         else if (press[7] && !r.value && can_bind()) page = 1, csel = 0, ccol = 0, changed = true;
         if ((press[3] || press[4] || press[7]) && r.value) {   // (Enter, or A, as Right)
@@ -3269,6 +3339,7 @@ void menu_tick() {
             PostMessageA(app_window(), WM_APP + 8, (WPARAM)now_open, (LPARAM)(now_open && esc_opens));
         }
     }
+    publish_diagnostics();
     if (opts.show_fps) {
         static int64_t next = 0, last_game = 0, last_shown = 0;
         const int64_t now = prof_now();
