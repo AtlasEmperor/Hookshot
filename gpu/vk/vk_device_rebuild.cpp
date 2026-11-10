@@ -59,9 +59,10 @@ void destroy_unadopted(DeviceFacts& d) {
     if (const auto destroy = (PFN_vkDestroyDevice)vkGetDeviceProcAddr(d.device, "vkDestroyDevice")) destroy(d.device, nullptr);
     d.device = VK_NULL_HANDLE;
 }
-/// The device in use given up: every module's objects, then the device
-void tear_down() {
+/// The device in use given up: every module's objects (released: when they were all let go), then the device
+void tear_down(Clock::time_point* released = nullptr) {
     device_life_release_all();
+    if (released) *released = Clock::now();
     vkDestroyDevice(dev.device, nullptr);
     dev.device = VK_NULL_HANDLE;
 }
@@ -109,7 +110,9 @@ bool rebuild_once(int gpu_in_use, int robust_in_use) {
     }
     const VkPhysicalDevice before = dev.physical;
     DeviceFacts made;
-    if (!make_device(want, made) || !surface_supports(made)) {
+    const bool created = make_device(want, made);
+    const Clock::time_point t_created = Clock::now();
+    if (!created || !surface_supports(made)) {
         destroy_unadopted(made);
         opts.gpu_device = gpu_in_use, opts.robust = robust_in_use;
         device_gate_open();
@@ -122,7 +125,8 @@ bool rebuild_once(int gpu_in_use, int robust_in_use) {
         return true;
     }
     const Clock::time_point t_made = Clock::now();
-    tear_down();
+    Clock::time_point t_released;
+    tear_down(&t_released);
     const Clock::time_point t_down = Clock::now();
     bool ok = bring_up(made);
     if (!ok) {   // (the whole device again on the GPU and with the robustness before)
@@ -143,11 +147,13 @@ bool rebuild_once(int gpu_in_use, int robust_in_use) {
     out.ok = ok, out.rebuilt = true;
     out.pause_ms = ms_between(t_held, t_up);
     logf("vk: device rebuild (%s, robust buffers %s): %s; %s, Vulkan %u.%u; frame end %.1f ms, then the game held: gate %.1f ms, "
-         "work done %.1f ms, GPU picked %.1f ms, device made %.1f ms, given up %.1f ms, set up %.1f ms: %.1f ms in all",
+         "work done %.1f ms, GPU picked %.1f ms, device made %.1f ms, surface checked %.1f ms, modules let go %.1f ms, device "
+         "destroyed %.1f ms, set up %.1f ms: %.1f ms in all",
          change == device_change::Change::Gpu ? "another GPU" : "the same GPU", dev.robust_buffers ? "on" : "off",
          ok ? "done" : "failed, the device before set up again", dev.props.deviceName, VK_API_VERSION_MAJOR(dev.props.apiVersion),
          VK_API_VERSION_MINOR(dev.props.apiVersion), ms_between(t0, t_held), ms_between(t_held, t_gate), ms_between(t_gate, t_quiet),
-         ms_between(t_quiet, t_picked), ms_between(t_picked, t_made), ms_between(t_made, t_down), ms_between(t_down, t_up), out.pause_ms);
+         ms_between(t_quiet, t_picked), ms_between(t_picked, t_created), ms_between(t_created, t_made), ms_between(t_made, t_released),
+         ms_between(t_released, t_down), ms_between(t_down, t_up), out.pause_ms);
     publish(out);
     return true;
 }

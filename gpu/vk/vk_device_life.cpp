@@ -34,6 +34,18 @@ std::atomic<bool> closed{false};
 std::mutex gate_mu;
 std::condition_variable gate_cv;
 thread_local int use_depth = 0;
+// (a module's release or rebuild step that takes longer is named in the log)
+constexpr std::chrono::milliseconds kSlowStep{50};
+
+/// One module's step, timed
+template <class F> auto timed(const Step& s, const char* what, F&& step) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto result = step();
+    const auto took = std::chrono::steady_clock::now() - t0;
+    if (took > kSlowStep)
+        logf("vk: device rebuild: %s %s in %.0f ms", s.module, what, std::chrono::duration<double, std::milli>(took).count());
+    return result;
+}
 std::atomic<bool> frame_end_wanted{false};   // (set and cleared under gate_mu: a rebuild waits for device_frame_end)
 
 void leave() {
@@ -89,11 +101,11 @@ void device_gate_open() {
 void device_life_release_all() {
     std::vector<Step>& all = steps();
     for (auto it = all.rbegin(); it != all.rend(); ++it)
-        if (it->release) it->release();
+        if (it->release) timed(*it, "let go", [&] { return it->release(), true; });
 }
 bool device_life_rebuild_all() {
     for (const Step& s : steps()) {
-        if (s.rebuild && !s.rebuild()) {
+        if (s.rebuild && !timed(s, "made again", s.rebuild)) {
             logf("vk: device rebuild: %s could not be made again", s.module);
             return false;
         }
