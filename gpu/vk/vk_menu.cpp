@@ -30,6 +30,7 @@
 #include "vk_paths.h"
 #include "vk_menu.h"
 #include "vk_device_life.h"
+#include "robust_choice.h"
 #include "vk_menu_hit.h"
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "vk_debug.h"   // (the Debug tab's diagnostics rows)
@@ -461,6 +462,9 @@ const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
 }
+// (the GPU device and Robust buffers rows the device in use was made with: what the ini keeps, a row taking effect when the
+// device is made again with it, device_tick. -1: no device yet)
+int gpu_device_in_effect = -1, robust_in_effect = -1;
 const char* tx_gpu(int v) {
     static char buf[300];
     const int idx = v - 1;
@@ -618,7 +622,14 @@ MENU_HINTS(hn_preset, 0, "Each row as you set it. Changing most rows yourself co
            "Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.",
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.",
            "Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.")
-MENU_HINTS(hn_gpu, 0, "The best dedicated GPU.")
+/// GPU device: why the row went back, when the last change of it could not be made (the device in use stays)
+const char* hn_gpu(int v, int variant) {
+    static const char* const t[] = {"The best dedicated GPU."};
+    const DeviceRebuildOutcome o = device_rebuild_outcome();
+    if (variant < 0) return o.seq && !o.ok && o.change == device_change::Change::Gpu ? o.text : hint_in(t, 1, 0, v, 0);
+    if (variant == 0) return "the GPU asked for failed to set up: the one before was set up again";   // (the longest)
+    return hint_in(t, 1, 0, v, variant - 1);
+}
 /// Frame generation: how many frames are made for each of the game's
 const char* hn_framegen(int v, int variant) {
     // (2x: by AMD FSR 3.1 where it runs, from the scene's depth and motion: vk_framegen.cpp. Variant 1 is that text)
@@ -687,7 +698,23 @@ const char* tx_wide_menus(int v) {
 MENU_HINTS(hn_wide_menus, 0, "The menus stretched over the whole screen, as before.",
            "The menus in the middle 16:9; beside them, what the game draws there, out of focus.",
            "The menus in the middle 16:9; black beside them.")
-MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
+/// Robust buffers: off on a GPU without VK_EXT_robustness2, whatever the row says (robust_choice.h)
+const char* hn_robust(int v, int variant) {
+    static const char* const t[] = {"On, on every card that supports it.", "Can be faster on some NVIDIA cards.",
+                                    "Always on, on every card that supports it."};
+    static const char* const unsupported = "Off: this GPU does not offer bounds-checked buffer access.";
+    if (variant < 0) {
+        // (why the row went back after a failed change of it; or the GPU in use offers no robustness to turn on: no
+        // VK_EXT_robustness2, or not both of its robustBufferAccess2 and the core robustBufferAccess)
+        const DeviceRebuildOutcome o = device_rebuild_outcome();
+        if (o.seq && !o.ok && o.change == device_change::Change::Robustness) return o.text;
+        return dev.device && !dev.robust_offered && robust_choice::requested(v, getenv("RX_VK_ROBUST")) ? unsupported
+                                                                                                         : hint_in(t, 3, 0, v, 0);
+    }
+    if (variant == 0) return unsupported;
+    if (variant == 1) return "the robust buffers asked for failed to set up: the device before was set up again";   // (the longest)
+    return hint_in(t, 3, 0, v, variant - 2);
+}
 MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not.",
            "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
            "The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.")
@@ -729,7 +756,7 @@ Row rows[] = {
     {TAB_GRAPHICS, "Fullscreen", &opts.fullscreen, 0, 1, 1, tx_onoff,
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
-     "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
+     "Which graphics card the game runs on. Applies after a restart.", hn_gpu, false, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
@@ -780,7 +807,7 @@ Row rows[] = {
      "which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
     {TAB_GRAPHICS, "Robust buffers", &opts.robust, 0, 2, 1, tx_robust,
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a "
-     "restart.", hn_robust, true},
+     "restart.", hn_robust},
     {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
      "every GPU has. Applies after a restart.", hn_mesh_mode, true},
@@ -1253,6 +1280,13 @@ int detect_pad_layout() {
     if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 2;
     return 3;
 }
+/// A row's value as the ini keeps it: the GPU device and Robust buffers rows as the device in use was made with them (a choice
+/// that failed is never saved, and is not tried again at the next start)
+int saved_value(const Row& r) {
+    if (r.value == &opts.gpu_device && gpu_device_in_effect >= 0) return gpu_device_in_effect;
+    if (r.value == &opts.robust && robust_in_effect >= 0) return robust_in_effect;
+    return *r.value;
+}
 // (hookshot) the row's choice to the host: off, the default, or a microphone by its name (and its place in the host's list,
 // -1 while it is unplugged: of two with one name, the one chosen). Unplugged, the name is the kept one, cut: the host takes
 // a name that starts with it
@@ -1326,7 +1360,7 @@ void save() {
                 const Out o = output_at(*r.value);
                 fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
             } else if (r.value) {
-                fprintf(f, "%s=%d\n", ini_key(r), *r.value);
+                fprintf(f, "%s=%d\n", ini_key(r), saved_value(r));
             }
         }
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
@@ -2746,8 +2780,7 @@ void menu_set_gpu_count(int count) {
         }
     }
     restart_init();
-    for (int i = 0; i < kRows; i++)   // (the row's value the game started with, the cards counted)
-        if (rows[i].value == &opts.gpu_device) restart_state.restart_value(restart_slot[i], opts.gpu_device);
+    if (gpu_device_in_effect < 0) gpu_device_in_effect = opts.gpu_device, robust_in_effect = opts.robust;   // (the first device's)
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
@@ -2937,8 +2970,30 @@ void publish_diagnostics() {
     sent_samples = opts.sample_log, sent_exposure = opts.exposure_log;
 }
 
+// The GPU device and Robust buffers rows take effect when the device is made again (vk_device_rebuild.cpp, on its own thread):
+// asked for at each change of the rows, so that the rebuild waits until they rest, and once the start-up screen is gone (its
+// shader workers use the device outside the gate); kept in the ini once taken, put back where they were when it failed
+void device_tick() {
+    static int asked_gpu = -1, asked_robust = -1;   // (the rows of the request pending; -1: none)
+    static uint64_t seen = 0;
+    if (gpu_device_in_effect < 0) return;
+    if (const DeviceRebuildOutcome o = device_rebuild_outcome(); o.seq != seen) {
+        seen = o.seq, asked_gpu = asked_robust = -1;
+        gpu_device_in_effect = o.gpu_row, robust_in_effect = o.robust_row;
+        if (!o.ok) opts.gpu_device = o.gpu_row, opts.robust = o.robust_row;
+        menu_refresh = true;
+        save();
+    }
+    const bool other = opts.gpu_device != gpu_device_in_effect || opts.robust != robust_in_effect;
+    if (!other) asked_gpu = asked_robust = -1;   // (back to the device in use: a later change asks again)
+    if (other && !startup_on.load(std::memory_order_acquire) && (opts.gpu_device != asked_gpu || opts.robust != asked_robust)) {
+        asked_gpu = opts.gpu_device, asked_robust = opts.robust;
+        device_rebuild_request(gpu_device_in_effect, robust_in_effect);
+    }
+}
 void menu_tick() {
     fullscreen_tick();
+    device_tick();
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
