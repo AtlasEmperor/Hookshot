@@ -542,6 +542,18 @@ You need:
     without them the game builds but runs slower.
 - Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
 
+Or let [uv](https://docs.astral.sh/uv/) set up the Python and the tools, from the clone:
+
+```powershell
+uv run --python 3.12 --with-requirements requirements.txt nx2/bootstrap.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot"
+```
+
+It brings Python 3.12 and the packages of `requirements.txt`. Unless `HOOKSHOT_MINGW` (or `HOOKSHOT_MSVC=1`), `RX_CPM`
+and `WGPU_NATIVE` are set already and the clone holds `third_party\sdl2\SDL2.dll` and `SDL3.dll`, it downloads once,
+to `%LOCALAPPDATA%\HookshotBuilder\deps`, the parts of the latest release a build reads (about 245 MB: llvm-mingw, the
+CPM packages, wgpu-native, SDL and the profile files), each checked by the SHA-256 its `hookshot-setup.txt` names. The
+game's sources stay the clone's. The arguments are `make_game.py`'s; `--help` downloads nothing.
+
 </details>
 
 <details>
