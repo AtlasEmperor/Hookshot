@@ -15,6 +15,8 @@ enum S
     Stopped, Cancelled, CancelledNote, CloseQuestion, LanguageLabel,
     // (the update, English only for now: Strings.Text falls back to it)
     Download, Updating, UpdateFailed,
+    // (the build files kept, English only for now)
+    KeepBuildFiles, KeptBuildFiles, KeepSetByVariable,
 }
 
 static class Strings
@@ -29,6 +31,8 @@ static class Strings
         "Putting the game folder together", "Show details", "Hide details", "Cancel", "Back", "Open folder", "Play", "Your game is ready", "built in",
         "The build stopped", "Build cancelled", "You can start again from the same folder.", "Stop the build and close?", "Language",
         "Downloading the new version", "Updating your game", "The update could not be downloaded",
+        "Keep all build files for quicker updates", "Build files: about {0}, kept in {1} so that updates are quick.",
+        "HOOKSHOT_KEEP_BUILD_FILES is set on this PC: it decides.",
     };
     static readonly string[] Fr =
     {

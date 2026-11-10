@@ -11,5 +11,6 @@
     <Compile Include="../../builder/HookshotBuilder/Runner.cs" Link="Runner.cs"/>
     <Compile Include="../../builder/HookshotBuilder/BuilderSettings.cs" Link="BuilderSettings.cs"/>
     <Compile Include="../../builder/HookshotBuilder/ShaderStep.cs" Link="ShaderStep.cs"/>
+    <Compile Include="../../builder/HookshotBuilder/Storage.cs" Link="Storage.cs"/>
   </ItemGroup>
 </Project>

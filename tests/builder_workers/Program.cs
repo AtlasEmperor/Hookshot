@@ -86,13 +86,33 @@ static class Program
         Require(BuilderSettings.Read(settings) == (null, null), "Nothing saved yet must be no settings, not an error.");
         new BuilderSettings { Out = "authored game folder", PrepareLater = true }.Save(settings);
         File.WriteAllText(settings + ".part", "a save cut short");
-        new BuilderSettings { Out = "authored second folder", MemoryGb = 16, Track = "rc" }.Save(settings);
+        new BuilderSettings { Out = "authored second folder", KeepBuildFiles = true, MemoryGb = 16, Track = "rc" }.Save(settings);
         var (saved, error) = BuilderSettings.Read(settings);
-        Require(error == null && saved is { Out: "authored second folder", PrepareLater: false, MemoryGb: 16, Track: "rc" }, "The settings saved last must be read back.");
+        Require(error == null && saved is { Out: "authored second folder", PrepareLater: false, KeepBuildFiles: true, MemoryGb: 16, Track: "rc" },
+                "The settings saved last must be read back.");
         Require(!File.Exists(settings + ".part"), "A finished save must leave nothing beside the settings.");
         File.WriteAllText(settings, "not json");
         (saved, error) = BuilderSettings.Read(settings);
         Require(saved == null && error != null && error.Contains(settings), "Unreadable settings must say why.");
+    }
+
+    /// HOOKSHOT_KEEP_BUILD_FILES decides over the builder's own keep setting only when it is set, and 0 keeps nothing more
+    static void KeepVariableChecks()
+    {
+        const string name = "HOOKSHOT_KEEP_BUILD_FILES";
+        var original = Environment.GetEnvironmentVariable(name);
+        try
+        {
+            foreach (var (value, expected) in new (string?, bool?)[] { (null, null), ("1", true), ("0", false), ("yes", true) })
+            {
+                Environment.SetEnvironmentVariable(name, value);
+                Require(Storage.KeepBuildFilesVariable == expected, $"HOOKSHOT_KEEP_BUILD_FILES={value} must decide {expected}.");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, original);
+        }
     }
 
     static async Task Main(string[] args)
@@ -121,6 +141,7 @@ static class Program
 
             ShaderStepChecks(root);
             SettingsChecks(root);
+            KeepVariableChecks();
             Require(BuildWorkers.Choices(4).SequenceEqual(new object[] { BuildWorkers.Automatic, 1, 2, 3, 4 }),
                 "The menu must offer Automatic first and one count per logical processor.");
             Require(BuildWorkers.Choices(0).SequenceEqual(new object[] { BuildWorkers.Automatic, 1 }), "CPU fallback must still offer one worker.");
@@ -232,7 +253,7 @@ static class Program
             var emptyError = await empty.StandardError.ReadToEndAsync();
             await empty.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
             Require(empty.ExitCode == 0 && emptyError.Length == 0 && emptyOutput.Contains("Empty inherited worker entry passed."), "Empty inheritance check failed: " + emptyError);
-            Console.WriteLine($"Windows Builder worker checks passed ({checks} assertions). Only authored argv/HOOKSHOT_JOBS were inspected.");
+            Console.WriteLine($"Windows Builder worker checks passed ({checks} assertions). Only authored argv, settings and variables were inspected.");
         }
         finally
         {

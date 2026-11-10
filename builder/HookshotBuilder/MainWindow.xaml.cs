@@ -303,6 +303,7 @@ public partial class MainWindow : Window
         if (error != null) AddLog(error);
         if (s == null) return;
         PrepareTick.IsChecked = !s.PrepareLater;
+        keepChosen = s.KeepBuildFiles;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
         FsrTick.IsChecked = s.Fsr;
@@ -332,7 +333,7 @@ public partial class MainWindow : Window
             var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
                                           Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
-                                          PrepareLater = PrepareTick.IsChecked != true,
+                                          PrepareLater = PrepareTick.IsChecked != true, KeepBuildFiles = keepChosen,
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
             s.Save(SettingsPath);
@@ -679,14 +680,35 @@ public partial class MainWindow : Window
         Refresh();
     }
 
-    /// How much the build files take and where, said before the build (they stay after it, for quick updates)
+    // (the player's own "Keep all build files" choice, saved with the settings; HOOKSHOT_KEEP_BUILD_FILES, when set, decides instead)
+    bool keepChosen;
+
+    /// Whether this build keeps all its build files: HOOKSHOT_KEEP_BUILD_FILES when it is set, else the saved choice (an update from the
+    /// game's launcher starts before ApplySettings, so it reads the settings themselves)
+    bool KeepsBuildFiles() => Storage.KeepBuildFilesVariable ?? BuilderSettings.Load(SettingsPath)?.KeepBuildFiles == true;
+
+    void KeepChanged(object sender, RoutedEventArgs e)
+    {
+        keepChosen = KeepTick.IsChecked == true;
+        SaveSettings();
+        ShowWork();
+    }
+
+    /// How much the build files take and where, said before the build: this build's compiled code stays after it, or all of it when
+    /// the build files are kept
     void ShowWork()
     {
-        if (WorkNote == null) return;
+        if (WorkNote == null || KeepTick == null) return;
         var work = Storage.Work;
+        var variable = Storage.KeepBuildFilesVariable;
+        KeepTick.IsEnabled = variable == null;
+        KeepTick.IsChecked = variable ?? keepChosen;
+        KeepTick.ToolTip = variable == null ? null : T(S.KeepSetByVariable);
         WorkReset.Visibility = Storage.WorkChosen ? Visibility.Visible : Visibility.Collapsed;
-        WorkNote.Text = Storage.KeepBuildFiles
+        WorkNote.Text = variable == true
             ? $"Build files: about {Storage.Gb(Storage.BuildFilesBytes)}, kept in {work} so that updates are quick (HOOKSHOT_KEEP_BUILD_FILES)."
+            : variable == null && keepChosen
+            ? string.Format(T(S.KeptBuildFiles), Storage.Gb(Storage.BuildFilesBytes), work)
             : $"Build files: about {Storage.Gb(Storage.BuildFilesBytes)} in {work} while it builds; when the game is ready about 1 GB stays (the compiled code) so that updates compile only what changed.";
         WorkNote.Foreground = (Brush)FindResource("InkSoft");
         try
@@ -699,7 +721,7 @@ public partial class MainWindow : Window
                 WorkNote.Foreground = (Brush)FindResource("Bad");
             }
         }
-        catch (Exception) { }
+        catch (Exception e) when (e is ArgumentException or IOException or UnauthorizedAccessException) { }   // (a drive that cannot tell its free space)
     }
 
     void LanguageChanged(object sender, SelectionChangedEventArgs e)
@@ -710,6 +732,7 @@ public partial class MainWindow : Window
         BackButton.Content = T(S.Back);
         OpenButton.Content = T(S.OpenFolder);
         PlayText.Text = T(S.Play);
+        KeepTick.Content = T(S.KeepBuildFiles);
         ShowLog.Content = T(ShowLog.IsChecked == true ? S.HideDetails : S.ShowDetails);
     }
 
@@ -895,6 +918,7 @@ public partial class MainWindow : Window
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
         if (fsr && !args.Contains("--fsr")) args.Add("--fsr");
         if (fsr && !args.Contains("--fetch-fsr-runtime")) args.AddRange(new[] { "--fetch-fsr-runtime", "--accept-amd-license" });
+        if (Storage.KeepBuildFilesVariable == null && KeepsBuildFiles()) args.Add("--keep-build-files");   // (HOOKSHOT_KEEP_BUILD_FILES, when set, reaches make_game.py itself)
         runner = new Runner(tools, args, workers, dlss ? Storage.NgxSdk : null, memoryGb, fsr ? Storage.FfxSdk : null);
         runner.Line += l => Dispatcher.BeginInvoke(() => Line(l));
         runner.Finished += failure => Dispatcher.BeginInvoke(() => Ended(failure));
@@ -1114,16 +1138,19 @@ public partial class MainWindow : Window
         StorageRow.Visibility = Visibility.Visible;
     }
 
-    // (players asked for the space back: the translated code, the setup's and updater's downloads and older builder versions go as soon
-    // as the game is ready. The compiled objects stay (~1 GB): without them every update compiled all ~600 files again, an hour and
-    // more (issue 1287). Free up space lets them go too. HOOKSHOT_KEEP_BUILD_FILES=1 keeps everything)
+    // (players asked for the space back: the setup's and updater's downloads and older builder versions go once the game is ready.
+    // The translated code goes too; the compiled objects stay (~1 GB), or every update compiled all ~600 files again (issue 1287).
+    // Free up space lets them go too.
+    // Kept build files (the tick, or HOOKSHOT_KEEP_BUILD_FILES=1) all stay, the translated code with them)
     async Task FreeAfterBuild()
     {
-        if (!Storage.KeepBuildFiles)
-        {
-            var left = await Task.Run(() => Storage.Free(afterBuild: true));
-            if (left >= 100L << 20) AddLog($"build files: {Storage.Gb(left)} could not be deleted (a file in use); they go after the next build");
-        }
+        var keep = KeepsBuildFiles();
+        var left = await Task.Run(() => Storage.Free(afterBuild: true, keepBuildFiles: keep));
+        if (left >= 100L << 20)
+            AddLog(keep
+                ? $"builder downloads and older versions: {Storage.Gb(left)} could not be deleted (a file in use); they go after the next build"
+                : $"build files and builder downloads: {Storage.Gb(left)} could not be deleted (a file in use); the downloads and older " +
+                  "versions go after the next build, the build files after the next one that does not keep them");
         await ShowStorageUse();
     }
 

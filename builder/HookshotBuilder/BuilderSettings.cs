@@ -13,6 +13,7 @@ sealed class BuilderSettings
     public bool PrepareLater { get; set; }   // ("Prepare shaders now" unticked)
     public int? MemoryGb { get; set; }
     public string? Track { get; set; }   // (the update track chosen, Updater.cs: release, rc or nightly; null: these tools' own)   // (Build memory; null: Automatic. The updates use it too, as they show no menu)
+    public bool KeepBuildFiles { get; set; }   // ("Keep all build files" ticked: make_game.py --keep-build-files)
 
     public static BuilderSettings? Load(string path) => Read(path).Settings;
 

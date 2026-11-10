@@ -142,6 +142,9 @@
                 <Button x:Name="WorkReset" Grid.Column="2" Style="{StaticResource LinkButton}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center"
                         Content="Default" Click="ResetWork"/>
               </Grid>
+              <!-- (kept build files, make_game.py's keep flag: the translated code stays too; HOOKSHOT_KEEP_BUILD_FILES, when set, decides instead) -->
+              <CheckBox x:Name="KeepTick" Style="{StaticResource Tick}" IsChecked="False" Margin="0,8,0,0" Click="KeepChanged"
+                        ToolTipService.ShowOnDisabled="True"/>
             </StackPanel>
             <StackPanel Grid.Column="2">
               <TextBlock x:Name="LanguageLabel" Style="{StaticResource Label}" Text="GAME LANGUAGE"/>
