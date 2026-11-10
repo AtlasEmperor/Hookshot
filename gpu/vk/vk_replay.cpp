@@ -2935,15 +2935,16 @@ void status_tick() {
 }
 
 std::atomic<bool> present_native_pq{false};   // (do_present: the game's picture is already HDR10)
-/// (hookshot) Whether a diagnostic that records SDR pictures (RX_VK_SHOTS, RX_VK_FRAMELOG) leaves this one out: it is PQ-coded, HDR
-/// set to Native. Said once per diagnostic, through its own `told`
+queued_pq::Answer hdr10_answer;               // (what the game was last told of its display: the option HOS_OPT_HDR_STATUS)
+std::atomic<bool> present_game_pq{false};     // (do_present: the game drew the picture as PQ, whatever the swapchain: present_image converts it for an SDR one)
+/// (hookshot) Whether a diagnostic that records SDR pictures (RX_VK_SHOTS, RX_VK_FRAMELOG) leaves this one out: it is PQ-coded, the
+/// game drew it for an HDR10 display (HDR set to Native, or the window fallen back to SDR since). Said once per diagnostic,
+/// through its own `told`
 bool skip_pq_picture(const char* diagnostic, bool& told) {
-    if (!present_native_pq.load(std::memory_order_relaxed)) return false;
+    if (!present_native_pq.load(std::memory_order_relaxed) && !present_game_pq.load(std::memory_order_relaxed)) return false;
     if (!told) told = true, logf("vk: HDR: %s skips PQ10 pictures; it records SDR ones", diagnostic);
     return true;
 }
-queued_pq::Answer hdr10_answer;               // (what the game was last told of its display: the option HOS_OPT_HDR_STATUS)
-std::atomic<bool> present_game_pq{false};     // (do_present: the game drew the picture as PQ, whatever the swapchain: present_image converts it for an SDR one)
 uint64_t present_value = 0;   // (the present job's value, handed out as it came; 0: the next one)
 struct PendingShot {
     bool on = false;

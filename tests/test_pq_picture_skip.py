@@ -1,4 +1,5 @@
-"""The frame log and the shots (SDR recordings) leave a PQ-coded picture out and say so once each; no game or GPU required."""
+"""The frame log and the shots (SDR recordings) leave a PQ-coded picture out, the game's native HDR one and the one a window that
+fell back to SDR converts, and say so once each; no game or GPU required."""
 
 import argparse
 import os
@@ -38,7 +39,7 @@ void logf(const char* format, ...) {
     va_end(args);
     lines.emplace_back(line);
 }
-std::atomic<bool> present_native_pq{false};
+std::atomic<bool> present_native_pq{false}, present_game_pq{false};
 @SKIP@
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "failed line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
 
@@ -52,6 +53,14 @@ int main() {
     CHECK(skip_pq_picture("RX_VK_FRAMELOG", framelog_told) && lines.size() == 2);
     present_native_pq = false;
     CHECK(!skip_pq_picture("RX_VK_FRAMELOG", framelog_told));
+    // The game's PQ picture on a window that fell back to SDR is PQ-coded too (it is converted for the window, not recorded as is).
+    bool queued_told = false;
+    present_game_pq = true;
+    CHECK(skip_pq_picture("RX_VK_SHOTS", queued_told) && lines.size() == 3);
+    CHECK(lines[2] == "vk: HDR: RX_VK_SHOTS skips PQ10 pictures; it records SDR ones");
+    CHECK(skip_pq_picture("RX_VK_SHOTS", queued_told) && lines.size() == 3);
+    present_game_pq = false;
+    CHECK(!skip_pq_picture("RX_VK_SHOTS", queued_told));
     std::puts("PASS: PQ pictures left out of the shots and the frame log, said once each");
 }
 """
