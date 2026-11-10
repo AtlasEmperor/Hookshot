@@ -1245,7 +1245,8 @@ def lift_key(exefs, work, env):
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
             with open(f, "rb") as src:
                 h.update(hashlib.sha1(src.read(), usedforsecurity=False).digest())
-    lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_"))})
+    # (RX_CPM: the compile's header packages, which the lift never reads; the Windows builder points it into its own versioned folder)
+    lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_")) and k != "RX_CPM"})
     h.update(repr(sorted(lift_env.items())).encode())
     return h.hexdigest()
 

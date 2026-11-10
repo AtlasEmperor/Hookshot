@@ -44,6 +44,8 @@ def main():
             check("another lift setting changes the key", make_game.lift_key(str(exefs), str(work), dict(env, A64_HOT_CHUNK="")) != key)
             with mock.patch.dict(os.environ, {"A64_KEEP_FLAGS": "1"}):
                 check("a lifter switch in the environment changes the key", make_game.lift_key(str(exefs), str(work), env) != key)
+            with mock.patch.dict(os.environ, {"RX_CPM": str(d / "versions" / "v2.0.6" / "tools" / "cpm")}):
+                check("another builder's header packages keep the key", make_game.lift_key(str(exefs), str(work), env) == key)
             real_open = open
             changed = str(ROOT / "nx2" / "lift.py")
 
