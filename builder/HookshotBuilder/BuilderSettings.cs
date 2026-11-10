@@ -14,10 +14,26 @@ sealed class BuilderSettings
     public int? MemoryGb { get; set; }
     public string? Track { get; set; }   // (the update track chosen, Updater.cs: release, rc or nightly; null: these tools' own)   // (Build memory; null: Automatic. The updates use it too, as they show no menu)
 
-    public static BuilderSettings? Load(string path)
+    public static BuilderSettings? Load(string path) => Read(path).Settings;
+
+    /// The settings saved at path: none when nothing was saved yet, or why they could not be read
+    public static (BuilderSettings? Settings, string? Error) Read(string path)
     {
-        try { return System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(System.IO.File.ReadAllText(path)); }
-        catch (Exception) { return null; }
+        try { return (System.Text.Json.JsonSerializer.Deserialize<BuilderSettings>(System.IO.File.ReadAllText(path)), null); }
+        catch (Exception e) when (e is System.IO.FileNotFoundException or System.IO.DirectoryNotFoundException) { return (null, null); }
+        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            return (null, $"the builder's settings could not be read ({path}): {e.Message}");
+        }
+    }
+
+    /// Written whole at path: beside it first, then moved over the old file, so a write cut short leaves the last settings readable
+    public void Save(string path)
+    {
+        var part = path + ".part";
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+        System.IO.File.WriteAllText(part, System.Text.Json.JsonSerializer.Serialize(this));
+        System.IO.File.Move(part, path, overwrite: true);
     }
 
     /// (the updates, from the launcher's Update and from the --update start after a self-update, begin before ApplySettings sets

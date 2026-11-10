@@ -299,7 +299,8 @@ public partial class MainWindow : Window
 
     void ApplySettings()
     {
-        var s = BuilderSettings.Load(SettingsPath);
+        var (s, error) = BuilderSettings.Read(SettingsPath);
+        if (error != null) AddLog(error);
         if (s == null) return;
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
@@ -334,10 +335,12 @@ public partial class MainWindow : Window
                                           PrepareLater = PrepareTick.IsChecked != true,
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
                                           Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
+            s.Save(SettingsPath);
         }
-        catch (Exception) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            AddLog($"the builder's settings could not be saved ({SettingsPath}): {e.Message}");
+        }
     }
 
     /// (development) HOOKSHOT_UI_PREVIEW=build|ready|problem|update: one screen with made-up progress, nothing run

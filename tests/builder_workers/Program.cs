@@ -79,6 +79,22 @@ static class Program
                 && stopped.Contains("15 minutes"), "A stopped preparation must say why under its row.");
     }
 
+    /// The builder's settings: saved whole, read back, and a file that cannot be read said, never taken for no settings
+    static void SettingsChecks(string root)
+    {
+        var settings = Path.Combine(root, "settings", "builder-settings.json");
+        Require(BuilderSettings.Read(settings) == (null, null), "Nothing saved yet must be no settings, not an error.");
+        new BuilderSettings { Out = "authored game folder", PrepareLater = true }.Save(settings);
+        File.WriteAllText(settings + ".part", "a save cut short");
+        new BuilderSettings { Out = "authored second folder", MemoryGb = 16, Track = "rc" }.Save(settings);
+        var (saved, error) = BuilderSettings.Read(settings);
+        Require(error == null && saved is { Out: "authored second folder", PrepareLater: false, MemoryGb: 16, Track: "rc" }, "The settings saved last must be read back.");
+        Require(!File.Exists(settings + ".part"), "A finished save must leave nothing beside the settings.");
+        File.WriteAllText(settings, "not json");
+        (saved, error) = BuilderSettings.Read(settings);
+        Require(saved == null && error != null && error.Contains(settings), "Unreadable settings must say why.");
+    }
+
     static async Task Main(string[] args)
     {
         if (args.Length is < 1 or > 2) throw new Exception("Pass the Python executable for the authored child.");
@@ -104,6 +120,7 @@ static class Program
             }
 
             ShaderStepChecks(root);
+            SettingsChecks(root);
             Require(BuildWorkers.Choices(4).SequenceEqual(new object[] { BuildWorkers.Automatic, 1, 2, 3, 4 }),
                 "The menu must offer Automatic first and one count per logical processor.");
             Require(BuildWorkers.Choices(0).SequenceEqual(new object[] { BuildWorkers.Automatic, 1 }), "CPU fallback must still offer one worker.");
