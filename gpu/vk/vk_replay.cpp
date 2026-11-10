@@ -3318,7 +3318,6 @@ void do_present(const nvn_tex* t, const int crop[4]) {
 // <file>.go exists (scripts/framelog.py finds the flashes). Taken at the last step and written on a thread of its own, so
 // that the game keeps its speed: a shot of every frame at 1280x720 held it at 30 fps, where the flashes may not show.
 // A record: u64 time (ns), u32 sequence, u32 kind (0 the game's, 1 made), 320x180 RGBA.
-void exposure_log_dump(const char* why);   // (vk_draw.cpp)
 void probe_dump_all(const char* why);
 bool probe_serial();
 namespace {
@@ -3467,7 +3466,7 @@ void framelog_collect(int slot) {
                 if (b > a) n2 += snprintf(line + n2, sizeof line - n2, " -%d:%llu", k, (unsigned long long)(b - a));
             }
             logf("%s", line);
-            exposure_log_dump("white frame");
+            debug_exposure_dump("white frame");
             probe_dump_all("white frame");
         }
         if (l.kind == 0 && mean * 2 < last_mean && last_mean > 40) {   // (a picture gone dark for a frame, the HUD on it)
@@ -3487,7 +3486,7 @@ void framelog_collect(int slot) {
                     }
                     fclose(o);
                 }
-                exposure_log_dump("dark frame");
+                debug_exposure_dump("dark frame");
                 probe_dump_all("dark frame");
                 pass_traces_log(texture_frame_no() - 7, texture_frame_no());
             }

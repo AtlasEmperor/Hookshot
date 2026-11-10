@@ -781,6 +781,10 @@ a replay without queues; reset `0` means no reset was seen on that queue. The lo
 Remove the setting after collecting the log. The trace leaves the counter estimates, queue waits, batching and replay
 scheduling as they are, and logging can still add overhead. It is diagnostic evidence, not a visual fix.
 
+`RX_VK_EXPOSURE_LOG=2` logs the final pass's exposure by presentation, every reading of the session, for comparison with
+the samples. `RX_VK_EXPOSURE_LOG=1` keeps only the most recent 32 readings in memory, for the dump the frame log
+(`RX_VK_FRAMELOG`) writes when a frame turns white or dark.
+
 </details>
 
 ## How it works
