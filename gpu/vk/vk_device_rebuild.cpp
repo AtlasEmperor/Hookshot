@@ -99,6 +99,7 @@ bool rebuild_once(int gpu_in_use, int robust_in_use) {
     const auto change = device_change::needed(dev.physical, dev.robust_buffers, want, robust_want);
     out.change = change;
     const bool gpu = change == device_change::Change::Gpu;
+    const Clock::time_point t_picked = Clock::now();
     if (change == device_change::Change::None) {
         device_gate_open();
         out.ok = true;
@@ -142,11 +143,11 @@ bool rebuild_once(int gpu_in_use, int robust_in_use) {
     out.ok = ok, out.rebuilt = true;
     out.pause_ms = ms_between(t_held, t_up);
     logf("vk: device rebuild (%s, robust buffers %s): %s; %s, Vulkan %u.%u; frame end %.1f ms, then the game held: gate %.1f ms, "
-         "work done %.1f ms, made %.1f ms, given up %.1f ms, set up %.1f ms: %.1f ms in all",
+         "work done %.1f ms, GPU picked %.1f ms, device made %.1f ms, given up %.1f ms, set up %.1f ms: %.1f ms in all",
          change == device_change::Change::Gpu ? "another GPU" : "the same GPU", dev.robust_buffers ? "on" : "off",
          ok ? "done" : "failed, the device before set up again", dev.props.deviceName, VK_API_VERSION_MAJOR(dev.props.apiVersion),
          VK_API_VERSION_MINOR(dev.props.apiVersion), ms_between(t0, t_held), ms_between(t_held, t_gate), ms_between(t_gate, t_quiet),
-         ms_between(t_quiet, t_made), ms_between(t_made, t_down), ms_between(t_down, t_up), out.pause_ms);
+         ms_between(t_quiet, t_picked), ms_between(t_picked, t_made), ms_between(t_made, t_down), ms_between(t_down, t_up), out.pause_ms);
     publish(out);
     return true;
 }
