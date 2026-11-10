@@ -18,6 +18,7 @@
 
 #include "vk_fsr3.h"
 #include "vk_fsr3_inputs.h"
+#include "vk_device_life.h"
 #include "vk_draw.h"      // (descriptors_disturbed)
 #include "vk_gprof.h"     // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_menu.h"
@@ -466,7 +467,8 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
 
 bool supported() {
     if (!dev.device) return false;   // (asked before the device is made, by the menu: not an answer to keep)
-    static const bool answer = [] {
+    static DeviceLatch<bool> answer;   // (each device's)
+    return answer.get([] {
         // (the widest pass pushes thirteen descriptors and the two samplers)
         if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR || dev.max_push_descriptors < 15) {
             logf("vk: fsr3: not on this GPU: no push descriptors, or fewer than 15 (%u)", dev.max_push_descriptors);
@@ -485,8 +487,7 @@ bool supported() {
         g.wave = (sg.supportedOperations & want) == want && (sg.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT);
         logf("vk: fsr3: AMD FSR 3.1 can run on this GPU");
         return true;
-    }();
-    return answer;
+    });
 }
 
 bool upscale(VkCommandBuffer cmd, const Inputs& in) {
@@ -670,6 +671,28 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
 VkImage output_image() { return g.output.image; }
 VkImageView output_view() { return g.output.view; }
 
+namespace {
+// (a device rebuild: the passes, samplers and images made again by the next upscale, from a new history)
+void release() {
+    for (Pipeline& pass : g.passes) {
+        if (pass.pipeline) vkDestroyPipeline(dev.device, pass.pipeline, nullptr);
+        if (pass.layout) vkDestroyPipelineLayout(dev.device, pass.layout, nullptr);
+        if (pass.set) vkDestroyDescriptorSetLayout(dev.device, pass.set, nullptr);
+    }
+    for (VkSampler sampler : {g.point, g.linear})
+        if (sampler) vkDestroySampler(dev.device, sampler, nullptr);
+    for (int i = 0; i < 2; i++)
+        for (Image* t : {&g.accumulation[i], &g.luma[i], &g.luma_history[i], &g.internal_upscaled[i]}) destroy_now(*t);
+    for (Image* t : {&g.farthest_depth, &g.shading_change, &g.new_locks, &g.spd_mips, &g.farthest_depth_mip1,
+                     &g.dilated_motion_vectors, &g.dilated_depth, &g.previous_nearest_depth, &g.dilated_reactive_masks,
+                     &g.frame_info, &g.spd_atomic, &g.lanczos_lut, &g.default_reactive, &g.output})
+        destroy_now(*t);
+    for (auto& [frame, t] : g.dead) destroy_now(t);
+    g = State{};
+}
+const DeviceLife life(kDeviceOrderPresent, "AMD FSR 3.1's passes", release, nullptr, nullptr);
+} // namespace
+
 } // namespace mkwvk::fsr3
 
 namespace mkwvk {
@@ -699,6 +722,18 @@ Out& out_state() {
     static Out o;
     return o;
 }
+
+// (a device rebuild: the output pass made again at its next use)
+void release_out() {
+    Out& o = out_state();
+    std::lock_guard lk(o.mu);
+    if (o.pipe) vkDestroyPipeline(dev.device, o.pipe, nullptr);
+    if (o.layout) vkDestroyPipelineLayout(dev.device, o.layout, nullptr);
+    if (o.set) vkDestroyDescriptorSetLayout(dev.device, o.set, nullptr);
+    if (o.point) vkDestroySampler(dev.device, o.point, nullptr);
+    o.pipe = VK_NULL_HANDLE, o.layout = VK_NULL_HANDLE, o.set = VK_NULL_HANDLE, o.point = VK_NULL_HANDLE, o.tried = false;
+}
+const DeviceLife out_life(kDeviceOrderPresent, "AMD FSR 3.1's output pass", release_out, nullptr, nullptr);
 
 bool make_out_pipeline() {
     Out& o = out_state();

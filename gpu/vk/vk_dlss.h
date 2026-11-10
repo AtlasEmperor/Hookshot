@@ -24,6 +24,9 @@ void dlss_probe();
 void dlss_instance_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
 /// The device's extensions DLSS needs, added to `want` when the device has them
 void dlss_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all);
+/// The device made with those extensions adopted as the one in use (vk_main.cpp adopt_device): what they told of DLSS is
+/// its answer now (a device made and refused by a device rebuild leaves the answer of the one in use)
+void dlss_device_created();
 /// DLSS as the temporal upscaler's engine (DLSS and DLAA on the Upscaler row); nullptr in a build without it
 const TemporalEngine* dlss_engine();
 
