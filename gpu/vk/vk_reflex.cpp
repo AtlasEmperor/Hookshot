@@ -24,6 +24,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "vk_device_life.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
 #include "vk_work.h"   // (last: RX_VK_RECORDER=defer drains before the latency-sleep wait; =thread does not need to, the driver signals it)
@@ -118,6 +119,7 @@ void log_timings() {
 
 void reflex_device_extensions(std::vector<const char*>& want, const std::vector<VkExtensionProperties>& all) {
     static const char* e = getenv("RX_VK_REFLEX");
+    rx().have_ext = false;   // (asked again for each device made)
     if (e && !strcmp(e, "-")) return;   // (RX_VK_REFLEX=-: the extensions not even enabled)
     bool ll = false, pid = false;
     for (const auto& x : all) {
@@ -250,5 +252,18 @@ void reflex_sleep() {
     mark(VK_LATENCY_MARKER_INPUT_SAMPLE_NV);
     r.frame_marked = true;
 }
+
+namespace {
+// (a device rebuild: the sleep's semaphore and the functions of the old device let go; reflex_device_created takes the new
+// one's, the extensions as make_device asked for them)
+void release() {
+    Reflex& r = rx();
+    std::lock_guard lk(r.mu);
+    if (r.wake) vkDestroySemaphore(dev.device, r.wake, nullptr);
+    r.wake = VK_NULL_HANDLE, r.wake_value = 0, r.ready = false;
+    r.set_mode = nullptr, r.sleep = nullptr, r.marker = nullptr, r.timings = nullptr;
+}
+const DeviceLife life(kDeviceOrderPresent, "NVIDIA Reflex", release, nullptr, nullptr);
+}  // namespace
 
 } // namespace mkwvk
