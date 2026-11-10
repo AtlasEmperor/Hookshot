@@ -739,7 +739,7 @@ in a file named by `HOS_ENV_FILE`.
 
 To enable the debug tools, turn **Debug tools** on in the menu's Debug tab (or add `HOS_OOT_CHEATS=1` to
 `hookshot_env.txt` in the game folder). The tools then show below it on the same tab. The tab's Developer section,
-always shown, has the Descriptor reuse and Sampler cache rows.
+always shown, has the Descriptor reuse and Sampler cache rows, and the diagnostics rows described below.
 
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
 menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,
@@ -782,6 +782,11 @@ scheduling as they are, and logging can still add overhead. It is diagnostic evi
 `RX_VK_EXPOSURE_LOG=2` logs the final pass's exposure by presentation, every reading of the session, for comparison with
 the samples. `RX_VK_EXPOSURE_LOG=1` keeps only the most recent 32 readings in memory, for the dump the frame log
 (`RX_VK_FRAMELOG`) writes when a frame turns white or dark.
+
+The Developer section's **Occlusion reports** and **Exposure history** rows choose what a recording logs, and its
+**Recording** row starts and stops one: at most 30 seconds, 4,096 reports and, with **Each reading**, 600 exposure
+readings. A recording never starts by itself when the game starts, and a saved choice only selects what the next one
+logs. **Mark visual glitch** puts a marker in the log with the recent exposure history when you see a flash.
 
 </details>
 
