@@ -31,6 +31,7 @@
 #include "vk_menu.h"
 #include "vk_device_life.h"
 #include "robust_choice.h"
+#include "rows_script.h"
 #include "vk_menu_hit.h"
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "vk_debug.h"   // (the Debug tab's diagnostics rows)
@@ -2969,6 +2970,41 @@ void publish_diagnostics() {
     sent_samples = opts.sample_log, sent_exposure = opts.exposure_log;
 }
 
+/// RX_VK_ROWS (test runs, no one at the menu): the rows set at given shown frames, each as the arrows set it (rows_script.h).
+/// A row that goes by its own steps (Output resolution, Upscaler, Render resolution) is stepped to the value asked for
+void rows_script_tick() {
+    static const char* next = getenv("RX_VK_ROWS");
+    static uint64_t frames = 0;
+    if (!next) return;
+    frames++;
+    for (;;) {
+        rows_script::Entry e;
+        const rows_script::Next got = rows_script::take(frames, next, e);
+        if (got == rows_script::Next::Malformed) {
+            logf("vk: RX_VK_ROWS: \"%s\" is not <frame>:<key>=<value>: ignored from there", next);
+            next = nullptr;
+        }
+        if (got != rows_script::Next::Due) return;
+        Row* row = nullptr;
+        for (Row& r : rows)
+            if (r.value && !strcmp(ini_key(r), e.key)) row = &r;
+        if (!row) {
+            logf("vk: RX_VK_ROWS: frame %llu: no row is saved as %s", (unsigned long long)frames, e.key);
+            continue;
+        }
+        const int want = row->value == &opts.output_res ? parse_output(e.text) : std::clamp(e.value, row->lo, row->hi);
+        set_row(*row, want, 0, false);
+        for (const int dir : {1, -1})   // (each way at most once round the row's values, until it stops moving)
+            for (int n = 0; *row->value != want && n <= row->hi - row->lo; n++) {
+                const int before = *row->value;
+                set_row(*row, before + dir, dir, false);
+                if (*row->value == before) break;
+            }
+        save();
+        logf("vk: RX_VK_ROWS: frame %llu: %s=%s, the row at %d%s", (unsigned long long)frames, e.key, e.text, *row->value,
+             *row->value == want ? "" : " (the value asked for is not offered here)");
+    }
+}
 // The GPU device and Robust buffers rows take effect when the device is made again (vk_device_rebuild.cpp, on its own thread):
 // asked for at each change of the rows, so that the rebuild waits until they rest, and once the start-up screen is gone (its
 // shader workers use the device outside the gate); kept in the ini once taken, put back where they were when it failed
@@ -2992,6 +3028,7 @@ void device_tick() {
 }
 void menu_tick() {
     fullscreen_tick();
+    rows_script_tick();
     device_tick();
     enum { K_N = 17 };
     static bool held[K_N];
