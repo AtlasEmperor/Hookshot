@@ -36,7 +36,7 @@ def block(text, marker):
 
 def main():
     main_cpp = MAIN.read_text(encoding="utf-8")
-    if "dev.mesh_fallback = !dev.mesh_shader && f12.bufferDeviceAddress" not in main_cpp:
+    if "d.mesh_fallback = !d.mesh_shader && f12.bufferDeviceAddress" not in main_cpp:
         raise SystemExit("vk_main.cpp: no fallback without buffer device addresses")
     if "issue 640 fallback" not in main_cpp:
         raise SystemExit("vk_main.cpp: the fallback is not logged")

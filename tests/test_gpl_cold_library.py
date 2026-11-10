@@ -25,6 +25,7 @@ FIXTURE = r"""
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <vector>
 using VkPipeline = uint64_t;
 using VkPrimitiveTopology = int;
 #define VK_NULL_HANDLE 0
@@ -32,6 +33,8 @@ struct Program { uint64_t key; };
 struct NvnState {};
 struct Targets {};
 struct { int device; struct { bool pipelineCreationCacheControl; } vk13; } dev;
+// (vk_device_life.h's latch, worked out at each use: each run here is another device)
+template <class T> struct DeviceLatch { template <class Make> T get(Make&& make) { return make(); } };
 std::atomic<int64_t> st_lib_hits, st_lib_cold, st_lib_built, st_lib_build_us;
 inline uint64_t mix(uint64_t a, uint64_t b) { return (a * 1000003 + b + 1) * 0x9E3779B97F4A7C15ull; }
 inline void logf(const char*, ...) {}

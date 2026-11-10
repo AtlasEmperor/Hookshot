@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
     vk = ROOT / "gpu" / "vk"
     main_src = (vk / "vk_main.cpp").read_text(encoding="utf-8")
-    pick = main_src[main_src.index("bool pick_device() {"):]
+    pick = main_src[main_src.index("VkPhysicalDevice pick_device() {"):]
     pick = pick[:pick.index("\n}\n")]
     for need, why in (("menu_init()", "the saved choice is read before it is used"),
                       ("menu_set_gpu_count((int)valid_gpus.size())", "the row offers only the usable GPUs"),

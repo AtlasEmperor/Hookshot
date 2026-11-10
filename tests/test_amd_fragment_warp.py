@@ -59,7 +59,7 @@ def main():
     if "(uint32_t)dev.sg32_stages" not in stamp.split("return")[0]:
         raise SystemExit("programs translated for another GPU's pinned stages are kept in the program cache")
     main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
-    if "dev.driver_id = drv.driverID" not in main_cpp or "dev.subgroup_size = sg.subgroupSize" not in main_cpp:
+    if "d.driver_id = drv.driverID" not in main_cpp or "d.subgroup_size = sg.subgroupSize" not in main_cpp:
         raise SystemExit("the driver or its subgroup size is not read")
     warp = (SPIRV / "emit_spirv_warp.cpp").read_text(encoding="utf-8")
     if "ctx.profile.has_broken_spirv_fragment_shuffle && ctx.stage == Stage::Fragment" not in warp:

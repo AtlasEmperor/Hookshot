@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>

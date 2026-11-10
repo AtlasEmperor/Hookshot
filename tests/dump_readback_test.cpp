@@ -42,6 +42,8 @@ VkCommandBuffer last_barrier_cmd{};
 uint64_t last_barrier_epoch=UINT64_MAX;
 std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};
 struct GprofSpan { GprofSpan(VkCommandBuffer,const char*){} };
+struct DeviceLife { DeviceLife(int, const char*, void (*)(), bool (*)(), void (*)()) {} };   // (vk_device_life.h)
+constexpr int kDeviceOrderPresent = 60;
 void logf(const char* format,...) {
     char b[2048];va_list a;va_start(a,format);vsnprintf(b,sizeof b,format,a);va_end(a);lines.emplace_back(b);
 }

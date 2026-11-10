@@ -81,11 +81,11 @@ def main():
     hooks += [block(texture, m) for m in ("void texture_segments_begin(", "void texture_segment_worker(", "int texture_segment_end(")
               if m in texture]
     have_pools = "bool init_pools_make(" in replay
-    if have_pools:   # (the last fallible step of replay_start: no later failure returns with them made)
-        start = block(replay, "bool replay_start() {")
+    if have_pools:   # (the last fallible step of replay_objects_make: no later failure returns with them made)
+        start = block(replay, "bool replay_objects_make() {")
         call = "if (par_threads() >= 2 && !init_pools_make(pi)) return false;"
         if call not in start or start.index(call) < start.index("for (Frame& f : frames)") or                 "return false" in start[start.index(call) + len(call):]:
-            raise SystemExit("FAIL: replay_start does not make the init pools last (a later failure would leave them made)")
+            raise SystemExit("FAIL: replay_objects_make does not make the init pools last (a later failure would leave them made)")
     inc = {
         "init_upload.inc": cut(texture, "// ---- the recording's upload command buffer ----", "// ---- staging:"),
         "init_create.inc": create,

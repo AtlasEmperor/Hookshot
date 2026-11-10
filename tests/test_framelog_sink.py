@@ -30,6 +30,8 @@ def main():
     ready = block(source, "bool framelog_ready() {")
     # Only the thread factory is replaced; run the production startup/catch/rollback code.
     ready = ready.replace("std::thread(", "FakeThread(")
+    if "bool framelog_objects_make() {" in source:   # (its readback image and slots, made apart: again after a device rebuild)
+        ready = block(source, "bool framelog_objects_make() {") + "\n" + ready
     drop = block(source, "void framelog_resources_drop() {") if "void framelog_resources_drop() {" in source else "void framelog_resources_drop() {}"
     if "void framelog_write(FILE* f) {" in source:
         writer = block(source, "void framelog_write(FILE* f) {")
