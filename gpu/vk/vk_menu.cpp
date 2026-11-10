@@ -29,6 +29,7 @@
 
 #include "vk_paths.h"
 #include "vk_menu.h"
+#include "vk_device_life.h"
 #include "vk_menu_hit.h"
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "vk_debug.h"   // (the Debug tab's diagnostics rows)
@@ -2593,9 +2594,10 @@ static void probe_upscalers_soon() {
         if (!dev.device) return;
         std::thread([] {
             const auto t0 = std::chrono::steady_clock::now();
-            dlss_probe();
-            fsr4_probe();
-            (void)fsr3::supported();
+            for (void (*question)() : {dlss_probe, fsr4_probe, +[] { (void)fsr3::supported(); }}) {
+                DeviceUse use;   // (a device rebuild waits for the question under way; the next one asks the device then in use)
+                question();
+            }
             logf("menu: the upscalers asked in the background while the start-up screen shows (%.0f ms)",
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         }).detach();

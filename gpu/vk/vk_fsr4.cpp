@@ -17,6 +17,7 @@
 
 #include "vk_internal.h"
 #include "vk_temporal.h"
+#include "vk_device_life.h"
 
 #ifdef HOOKSHOT_FSR
 #include <chrono>
@@ -315,9 +316,11 @@ void barriers(VkCommandBuffer cmd, const VkImageMemoryBarrier2* b, uint32_t n) {
 
 #ifndef _WIN32
 /// (linux) a Vulkan FSR 4 build takes no frame without an exposure, and the chain's colour is tonemapped already: a 1x1 R32F of 1
+VkImage exposure_image = VK_NULL_HANDLE;   // (unit_exposure's, on the device in use)
+VmaAllocation exposure_allocation{};
 bool unit_exposure(VkCommandBuffer cmd, TemporalImage& out) {
-    static VkImage image = VK_NULL_HANDLE;
-    static VmaAllocation allocation{};
+    VkImage& image = exposure_image;
+    VmaAllocation& allocation = exposure_allocation;
     const bool made = image != VK_NULL_HANDLE;
     if (!made) {
         VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -340,6 +343,12 @@ bool unit_exposure(VkCommandBuffer cmd, TemporalImage& out) {
     }
     return true;
 }
+// (a device rebuild: the exposure made again at the next evaluation; the context went with the temporal chain's release)
+void release_exposure() {
+    if (exposure_image) destroy_image(exposure_image, exposure_allocation);
+    exposure_image = VK_NULL_HANDLE, exposure_allocation = nullptr;
+}
+const DeviceLife exposure_life(kDeviceOrderUpscaler, "AMD FSR 4's exposure", release_exposure, nullptr, nullptr);
 #endif
 
 // ---- the engine (vk_temporal.h TemporalEngine) ----

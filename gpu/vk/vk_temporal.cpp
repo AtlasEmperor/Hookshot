@@ -54,6 +54,7 @@
 #include "dlss_math.h"
 #include "temporal_jitter.h"
 #include "upscaler_rows.h"
+#include "vk_device_life.h"
 #include "vk_dlss.h"
 #include "vk_draw.h"
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own)
@@ -1011,5 +1012,34 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     }
     return true;
 }
+
+namespace {
+// (a device rebuild: each engine's state and the chain's images, buffers and passes let go now, the queues idle; the engines
+// started again, and the rest made again, at the next upscale, from a new history)
+void release() {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    for (Engine& k : s.engines) {
+        if (k.e && k.started && k.ok) k.e->release();
+        k.started = k.ok = false, k.failed = false;
+    }
+    drop_all();
+    free_dead(true);
+    for (VkPipeline pipe : {s.prep, s.out, s.actor})
+        if (pipe) vkDestroyPipeline(dev.device, pipe, nullptr);
+    for (VkPipelineLayout layout : {s.prep_layout, s.out_layout, s.actor_layout})
+        if (layout) vkDestroyPipelineLayout(dev.device, layout, nullptr);
+    for (VkDescriptorSetLayout set : {s.prep_set, s.out_set})
+        if (set) vkDestroyDescriptorSetLayout(dev.device, set, nullptr);
+    for (VkSampler sampler : {s.point, s.linear})
+        if (sampler) vkDestroySampler(dev.device, sampler, nullptr);
+    s.prep = s.out = s.actor = VK_NULL_HANDLE;
+    s.prep_layout = s.out_layout = s.actor_layout = VK_NULL_HANDLE;
+    s.prep_set = s.out_set = VK_NULL_HANDLE;
+    s.point = s.linear = VK_NULL_HANDLE;
+    s.actor_tried = false, s.drawing = nullptr, s.cam.valid = false, s.last_frame = 0, s.holding = false;
+}
+const DeviceLife life(kDeviceOrderPresent, "the temporal upscalers' chain", release, nullptr, nullptr);
+}  // namespace
 
 } // namespace mkwvk

@@ -30,6 +30,7 @@
 
 #include "dlss_checks.h"
 #include "upscaler_rows.h"
+#include "vk_device_life.h"
 #include "vk_menu.h"
 #include "vk_paths.h"
 #include "vk_temporal.h"
@@ -51,8 +52,11 @@ int env_switch(const char* name) {   // (-1: unset)
 }
 }  // namespace
 
-// (what is known of DLSS on this device: -1 not yet, else a DlssWhy. Set once the device is made and when NGX answers)
+// (what is known of DLSS on this device: -1 not yet, else a DlssWhy. Set once the device is adopted and when NGX answers)
 std::atomic<int> g_why{-1};
+// (the same for the device make_device is making, before NGX: the device in use keeps its own answer until that one is
+// adopted, dlss_device_created)
+std::atomic<int> g_why_made{-1};
 
 DlssWhy dlss_why() {
     if (!dlss_built()) return DLSS_NOT_BUILT;
@@ -399,6 +403,20 @@ uint64_t memory() {
 
 const TemporalEngine kEngine{"NVIDIA DLSS", "DLSS", start, prepare, evaluate, release, memory};
 
+// (a device rebuild: NGX shut down on the old device, its feature gone with the temporal chain's release before this; started
+// again on the new device at its first upscale)
+void ngx_release() {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    for (NVSDK_NGX_Parameter* p : {s.params, s.caps})
+        if (p) NVSDK_NGX_VULKAN_DestroyParameters(p);
+    if (s.ngx_tried) NVSDK_NGX_VULKAN_Shutdown1(dev.device);
+    s.params = s.caps = nullptr, s.feature = nullptr;
+    s.ngx_tried = s.ngx_ok = false;
+    s.feature_rw = s.feature_rh = s.feature_ow = s.feature_oh = s.min_rw = s.min_rh = 0, s.feature_preset = ~0u;
+}
+const DeviceLife ngx_life(kDeviceOrderUpscaler, "NVIDIA DLSS's NGX", ngx_release, nullptr, nullptr);
+
 }  // namespace
 
 bool dlss_built() { return true; }
@@ -418,6 +436,7 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     // which the replay enables already: core 1.2's bufferDeviceAddress stands for VK_EXT_buffer_device_address. The NVX ones
     // are on whenever the device has them, so the Insert menu's row needs no restart)
     if (env_switch("RX_VK_DLSS") == 0) return;
+    g_why_made = -1;   // (decided again for this device)
     bool both = true;
     for (const char* name : {VK_NVX_BINARY_IMPORT_EXTENSION_NAME, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME}) {
         bool have = false, listed = false;
@@ -428,8 +447,10 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     }
     // (NVIDIA's own extensions: without them this is not an NVIDIA GPU, or not one NGX runs on. With them, NGX says, in
     // dlss_probe or at the first upscale: a GTX has them too)
-    if (!both) g_why = DLSS_NEEDS_RTX;
+    if (!both) g_why_made = DLSS_NEEDS_RTX;
 }
+
+void dlss_device_created() { g_why = g_why_made.load(); }
 
 void dlss_probe() {
     if (dlss_why() != DLSS_OK || g_why.load(std::memory_order_relaxed) >= 0 || !dev.device) return;
@@ -443,6 +464,7 @@ const TemporalEngine* dlss_engine() { return nullptr; }
 void dlss_probe() {}
 void dlss_instance_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
 void dlss_device_extensions(std::vector<const char*>&, const std::vector<VkExtensionProperties>&) {}
+void dlss_device_created() {}
 
 #endif
 

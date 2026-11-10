@@ -20,6 +20,7 @@
 
 #include "dlss_math.h"
 #include "temporal_jitter.h"
+#include "vk_device_life.h"
 #include "vk_draw.h"   // (descriptors_disturbed)
 #include "vk_fsr3.h"
 #include "vk_fsr3fi.h"
@@ -366,5 +367,29 @@ uint32_t jitter_size(int axis) {
     const MkwVkJitter sample = jitter_sample();
     return axis == 2 ? sample.phases : axis ? sample.height : sample.width;
 }
+
+namespace {
+// (a device rebuild: the inputs' images, views and pass made again at the next prepare, from a new history)
+void release() {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    for (auto& d : s.dead) d.free();
+    s.dead.clear();
+    for (Image* im : {&s.color, &s.depth, &s.motion}) {
+        if (im->view) vkDestroyImageView(dev.device, im->view, nullptr);
+        if (im->image) destroy_image(im->image, im->memory);
+        *im = {};
+    }
+    for (const auto& [image, view] : s.depth_views) vkDestroyImageView(dev.device, view, nullptr);
+    s.depth_views.clear();
+    if (s.pipe) vkDestroyPipeline(dev.device, s.pipe, nullptr);
+    if (s.layout) vkDestroyPipelineLayout(dev.device, s.layout, nullptr);
+    if (s.set) vkDestroyDescriptorSetLayout(dev.device, s.set, nullptr);
+    if (s.point) vkDestroySampler(dev.device, s.point, nullptr);
+    s.pipe = VK_NULL_HANDLE, s.layout = VK_NULL_HANDLE, s.set = VK_NULL_HANDLE, s.point = VK_NULL_HANDLE, s.tried = false;
+    s.cam.valid = false, s.have_frame = false, s.frame = Frame{}, s.last_frame = 0;
+}
+const DeviceLife life(kDeviceOrderPresent, "AMD FSR 3.1's inputs", release, nullptr, nullptr);
+} // namespace
 
 } // namespace mkwvk::fsr3_inputs

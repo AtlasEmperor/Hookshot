@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "vk_fsr3fi.h"
+#include "vk_device_life.h"
 #include "vk_menu.h"    // (the Frame generation row)
 #include "vk_gprof.h"   // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_texture.h"
@@ -651,7 +652,8 @@ void clear_images(VkCommandBuffer cmd, std::initializer_list<const Image*> image
 /// What this device can do, which cannot change while it runs: asked once and kept.
 bool capable() {
     if (!dev.device) return false;   // (asked before the device is made, by the menu: not an answer to keep)
-    static const bool yes = []() {
+    static DeviceLatch<bool> yes;   // (each device's)
+    return yes.get([] {
         if (!dev.push_descriptor || !vkCmdPushDescriptorSetKHR) {
             logf("vk: fsr3fi: no push descriptors");
             return false;
@@ -659,8 +661,7 @@ bool capable() {
         if (!formats_supported() || !features_supported()) return false;
         logf("vk: fsr3fi: AMD FSR 3.1 frame interpolation can run on this GPU");
         return true;
-    }();
-    return yes;
+    });
 }
 
 uint32_t frames_wanted() {
@@ -1160,5 +1161,32 @@ bool generate(VkCommandBuffer cmd, const Inputs& in) {
 VkImage made_image() { return g.ready ? g.made[0].image : VK_NULL_HANDLE; }
 
 void reset() { g.first_frame = true; }
+
+namespace {
+// (a device rebuild: the passes, the sampler, the counters and every image made again at the next frame it makes)
+void release() {
+    for (Pipeline& pass : g.passes) {
+        if (pass.pipeline) vkDestroyPipeline(dev.device, pass.pipeline, nullptr);
+        if (pass.layout) vkDestroyPipelineLayout(dev.device, pass.layout, nullptr);
+        if (pass.set) vkDestroyDescriptorSetLayout(dev.device, pass.set, nullptr);
+    }
+    if (g.linear) vkDestroySampler(dev.device, g.linear, nullptr);
+    for (int i = 0; i < 2; i++) {
+        destroy_now(g.of_luma[i]);
+        for (Image& level : g.of_flow[i]) destroy_now(level);
+    }
+    for (Image* t : {&g.of_vector, &g.of_confidence, &g.of_scd_histogram, &g.of_scd_previous_histogram, &g.of_scd_temp,
+                     &g.of_scd_output, &g.fi_dilated_depth, &g.fi_dilated_motion_vectors, &g.fi_reconstructed_depth_previous,
+                     &g.fi_reconstructed_depth_interpolated, &g.fi_game_mv_x, &g.fi_game_mv_y, &g.fi_of_mv_x, &g.fi_of_mv_y,
+                     &g.fi_disocclusion_mask, &g.fi_inpainting_pyramid, &g.fi_previous_source, &g.fi_distortion_field})
+        destroy_now(*t);
+    for (Image& t : g.made) destroy_now(t);
+    for (auto& [frame, t] : dead) destroy_now(t);
+    dead.clear();
+    if (g.counters) destroy_buffer(g.counters, g.counters_memory);
+    g = State{};
+}
+const DeviceLife life(kDeviceOrderPresent, "AMD FSR 3.1's frame interpolation", release, nullptr, nullptr);
+} // namespace
 
 } // namespace mkwvk::fsr3fi

@@ -501,6 +501,7 @@ void adopt_device(const DeviceFacts& d) {
     if (dev.present_family != dev.queue_family) vkGetDeviceQueue(dev.device, dev.present_family, 0, &dev.present_queue);
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
+    dlss_device_created();
     reflex_device_created();
     antilag_device_created();
 }
