@@ -165,12 +165,11 @@ static int output_mode(void) {   /* (an explicit size: 1; the game's own: 0) */
     }
     return output_w != 0;
 }
-/* (an Output resolution as width << OUTPUT_WIDTH_SHIFT | height, the Insert menu's form, 0 the game's own) */
-enum { OUTPUT_WIDTH_SHIFT = 16, OUTPUT_HEIGHT_MASK = 0xffff };
-static int boot_output(void) { return output_mode() ? (int)(output_w << OUTPUT_WIDTH_SHIFT | output_h) : 0; }
+/* (an Output resolution as width << HOS_OUTPUT_WIDTH_SHIFT | height, the Insert menu's form, 0 the game's own) */
+static int boot_output(void) { return output_mode() ? (int)(output_w << HOS_OUTPUT_WIDTH_SHIFT | output_h) : 0; }
 static uint32_t display_size_of(int output, int height) {   /* (its display size) */
     if (!output) return height ? 1440 : 2560;
-    return height ? (uint32_t)output & OUTPUT_HEIGHT_MASK : (uint32_t)output >> OUTPUT_WIDTH_SHIFT;
+    return height ? (uint32_t)output & HOS_OUTPUT_HEIGHT_MASK : (uint32_t)output >> HOS_OUTPUT_WIDTH_SHIFT;
 }
 uint32_t hos_output_size(int height) { return display_size_of(boot_output(), height); }
 /* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
@@ -212,7 +211,7 @@ enum { OE_DISPLAY_BASE = 244 };   /* (the display-size object's frame base: widt
 /* (its flags word, and the flag that makes the frame's maker, f_806702e0, build the frame again from the base on its next run,
    which clears it: without it a base change under the same scale enum, 2560 x 1440 to 1920 x 1080, is not taken) */
 enum { OE_DISPLAY_FLAGS = 8, OE_DISPLAY_REBUILD = 0x80000 };
-enum { GAME_OUTPUT = 2048 << OUTPUT_WIDTH_SHIFT | 1152 };   /* (the game's own Output resolution, as the menu names it: hos_output_parse) */
+enum { GAME_OUTPUT = 2048 << HOS_OUTPUT_WIDTH_SHIFT | 1152 };   /* (the game's own Output resolution, as the menu names it: hos_output_parse) */
 static const uint32_t oe_messages[] = {OE_OPERATION_MODE_CHANGED, OE_PERFORMANCE_MODE_CHANGED, OE_GRAPHICS_SCALE_CHANGED};
 static volatile LONG oe_pending;   /* (bit i: oe_messages[i] waits for the game's next pop) */
 /* (what the game was told: 1 handheld, and the Output resolution; -1: the boot's) */
@@ -257,8 +256,8 @@ static int takes_output(int output) {
 static int menu_output_of(int value) {
     char text[32];
     uint32_t w, h;
-    snprintf(text, sizeof text, "%ux%u", (unsigned)value >> OUTPUT_WIDTH_SHIFT, (unsigned)value & OUTPUT_HEIGHT_MASK);
-    return hos_output_parse(text, &w, &h) ? (int)(w << OUTPUT_WIDTH_SHIFT | h) : 0;
+    snprintf(text, sizeof text, "%ux%u", (unsigned)value >> HOS_OUTPUT_WIDTH_SHIFT, (unsigned)value & HOS_OUTPUT_HEIGHT_MASK);
+    return hos_output_parse(text, &w, &h) ? (int)(w << HOS_OUTPUT_WIDTH_SHIFT | h) : 0;
 }
 /* Each game present (host/nn_vi.c): the menu's Profile and Output resolution, sent to the game when they change; the menu is told
    the Output resolution the running game has */
@@ -285,7 +284,7 @@ void hos_applet_presented(void) {
         if (rescaled) oe_post(2);
         const unsigned named = want_output ? (unsigned)want_output : (unsigned)GAME_OUTPUT;
         hos_log("oe: %s, output resolution %ux%u%s%s: the game told%s%s", want_handheld ? "handheld" : "docked",
-                named >> OUTPUT_WIDTH_SHIFT, named & OUTPUT_HEIGHT_MASK, want_output ? "" : " (the game's)",
+                named >> HOS_OUTPUT_WIDTH_SHIFT, named & HOS_OUTPUT_HEIGHT_MASK, want_output ? "" : " (the game's)",
                 resized ? " (with its display size)" : "",
                 want_handheld != was_handheld ? " (operation and performance modes)" : "", rescaled ? " (graphics scale)" : "");
     }

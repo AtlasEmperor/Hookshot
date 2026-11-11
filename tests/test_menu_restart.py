@@ -78,14 +78,23 @@ def function(source, start):
 
 def sources():
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    for row in ('"GPU device", &opts.gpu_device', '"Output resolution", &opts.output_res', '"Profile", &opts.handheld',
-                '"Ultrawide", &opts.ultrawide', '"Robust buffers", &opts.robust'):
+    for row in ('"GPU device", &opts.gpu_device', '"Output resolution", &opts.output_res', '"Ultrawide", &opts.ultrawide',
+                '"Robust buffers", &opts.robust'):
         at = menu.find(row)
         if at < 0:
             raise SystemExit("vk_menu.cpp: a row that takes a restart is missing: " + row)
         entry = menu[at:menu.index("},", at)]
         if not re.search(r",\s*true$", entry):
             raise SystemExit("vk_menu.cpp: %s is not marked as taking a restart" % row.split(",")[0])
+    # (applied while the game runs, host/nn_applet.c: the Profile always, an Output resolution the running game has taken)
+    profile = menu[menu.index('"Profile", &opts.handheld'):]
+    if re.search(r",\s*true$", profile[:profile.index("},")]):
+        raise SystemExit("vk_menu.cpp: the Profile applies at once, it is not marked as taking a restart")
+    if "!applied_live(r)" not in function(menu, "bool restart_changed(") or "applied_live(rows[i])" not in function(
+            menu, "void restart_values("):
+        raise SystemExit("vk_menu.cpp: an Output resolution the running game has taken is tagged or asked as taking a restart")
+    if "HOS_OPT_OUTPUT_RUNNING" not in function(menu, "void menu_option_set("):
+        raise SystemExit("vk_menu.cpp: the menu does not take the Output resolution the running game has")
     # (the Profile row was "Handheld profile": its key stays the one host/nn_applet.c reads, and its values say Docked and Handheld)
     if not re.search(r'&opts\.handheld\)\s*return\s*"handheld_profile"', function(menu, "const char* ini_key(const Row& r) {")):
         raise SystemExit("ini_key: the Profile row is not saved as handheld_profile (host/nn_applet.c would not read it)")
