@@ -8732,6 +8732,7 @@ void thread_reset() {
     fallback_payload_address = fallback_records_address = fallback_indirect_input = 0, fallback_draw_records = VK_NULL_HANDLE;
     work_since_barrier = false;
     last_desc_valid = false, last_desc_prog = nullptr, last_desc_bind = last_desc_reg = last_desc_ub = last_desc_dgen = 0;
+    last_desc_slotgen_gen = 0;
     tls_clear(last_desc_fp_tls), last_desc_fp_dummy = false, last_desc_samp = last_desc_destroy = 0;
     dry_last_valid = false;
     last_pipeline = VK_NULL_HANDLE;
