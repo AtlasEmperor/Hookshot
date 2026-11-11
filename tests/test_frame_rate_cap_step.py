@@ -7,6 +7,9 @@ rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py p
 1 ms, so the game keeps real time past 240 fps. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code and the build goes on with a warning.
 
+The cap follows the Insert menu's row while the game runs (HOS_OPT_FPS_CAP): the step, the vsync event's period and the game's
+limiter follow it, and a lower cap puts the game's own limiter value back.
+
 python -I -B tests/test_frame_rate_cap_step.py [--cc gcc]
 """
 import argparse
@@ -55,7 +58,9 @@ static uint8_t guest[0x4000];
 #define GP(a) ((void *)(guest + (a)))
 #define MOD 0x1000u
 static void hos_log(const char *fmt, ...) { (void)fmt; }
-int rx_option(int id, int otherwise) { (void)id; return otherwise; }
+@OPT@
+static int menu_row = -1;   /* (the menu's Game frame rate cap row; -1: no renderer yet) */
+int rx_option(int id, int otherwise) { return id == HOS_OPT_FPS_CAP && menu_row >= 0 ? menu_row : otherwise; }
 int hos_ini_option(const char *key, int otherwise) {   /* (frame_rate_cap=: the test's T_CAP_INDEX) */
     const char *e = getenv("T_CAP_INDEX");
     return !strcmp(key, "frame_rate_cap") && e ? atoi(e) : otherwise;
@@ -107,6 +112,17 @@ int main(int argc, char **argv) {
         CHECK(near(frames(10, 1.0 / 500), 1.0 / 500));    /* (500 fps: a 500th of game time each, not a 240th) */
         CHECK(near(lifted_step(60.0f, (float)*rate), 0.12));   /* (60 * a 500th: real time) */
         CHECK(near(frames(10, 1.0 / 5000), 1.0 / 1000));  /* (the shortest step, the pacing's 1 ms) */
+    } else if (!strcmp(mode, "live")) {   /* (the menu's row while the game runs: 120, back to 60, Uncapped, back to 60) */
+        menu_row = 2;
+        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *limit == 120 && vsync_period() == 1000000000LL / 120);
+        menu_row = 0;   /* (the game's own limiter back, the step the engine's) */
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *limit == 60 && vsync_period() == 1000000000LL / 60);
+        menu_row = 6;
+        CHECK(near(frames(10, 1.0 / 500), 1.0 / 500) && *limit == 1000 && vsync_period() == 1000000000LL / 1000);
+        *limit = 48;   /* (the game's adaptive controller sets its own: raised under the cap, kept at 60) */
+        CHECK(frames(1, 1.0 / 500) > 0.0f && *limit == 1000);
+        menu_row = 0;
+        CHECK(frames(10, 1.0 / 48) == 0.0f && *limit == 48);
     } else if (!strcmp(mode, "unknown index")) {   /* (frame_rate_cap= a later build's value: 60, as on the console) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *limit == 60);
     } else if (!strcmp(mode, "cap 60")) {
@@ -186,7 +202,13 @@ def main():
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
-    fixture = FIXTURE.replace("@HOST@", host).replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
+    period = re.search(r"^static int64_t vsync_period\(void\) \{.*\}$", vi, re.M)
+    check(period, "nn_vi.c has no vsync_period: the vsync event does not follow the cap")
+    api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+    option = re.search(r"^enum \{ HOS_OPT_FPS_CAP = \d+ \};$", api, re.M)
+    check(option, "vk_api.h has no HOS_OPT_FPS_CAP")
+    fixture = (FIXTURE.replace("@OPT@", option.group(0)).replace("@HOST@", host + "\n" + period.group(0))
+               .replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2])))
     with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
@@ -194,7 +216,7 @@ def main():
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
         for mode, cap, step, index in (("cap 120", "120", None, None), ("cap 60", None, None, None), ("step off", "120", "0", None),
                                        ("no hook", "120", None, None), ("uncapped", None, None, "6"), ("uncapped", "1000", None, None),
-                                       ("unknown index", None, None, "7"), ("cap 120", None, None, "2")):
+                                       ("unknown index", None, None, "7"), ("cap 120", None, None, "2"), ("live", None, None, None)):
             env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_") and k != "T_CAP_INDEX"}
             if cap:
                 env["HOS_FPS_MAX"] = cap
