@@ -221,9 +221,22 @@ static class Updater
         Application.Current.Shutdown();
     }
 
+    /// The folder built again with these tools.
+    /// Nothing is built at the first build of an update (not fetched) when the folder is already what these tools build or newer.
+    /// The game's offer named another release, which the folder does not need.
+    static void BuildFolder(MainWindow w, Tools tools, string folder, bool fetched, bool named)
+    {
+        var game = MainWindow.GameVersion(folder);
+        if (!fetched && tools.Version != null && game != null && !GameNeedsUpdate(game, tools.Version, named))
+            w.NothingToUpdate(folder);
+        else
+            w.UpdateBuild(tools, folder);
+    }
+
     /// The game in folder built again with the release asked for (tag), or the latest.
     /// Here when these tools build it (BuildsHere) or are just downloaded (fetched).
     /// Else after the setup installed it: it starts the new builder with --update folder --tag t --fetched.
+    /// Nothing is built when the folder is already what these tools build or newer (BuildFolder).
     public static async void UpdateFolder(MainWindow w, string folder, string? tag, bool fetched, bool named = false)
     {
         w.BeginUpdate(folder, tag);
@@ -243,7 +256,7 @@ static class Updater
         // (already the new release, or just downloaded: no second download)
         if (fetched || (tag != null && tools.Version == tag))
         {
-            w.UpdateBuild(tools, folder);
+            BuildFolder(w, tools, folder, fetched, named);
             return;
         }
         try
@@ -287,7 +300,7 @@ static class Updater
             if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
             if (BuildsHere(newTag, tools.Version, named))
             {
-                w.UpdateBuild(tools, folder);
+                BuildFolder(w, tools, folder, fetched, named);
                 return;
             }
             var name = string.Concat(newTag.Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.'));

@@ -338,7 +338,9 @@ namespace HookshotBuilder
     {
         public CancellationToken DownloadToken => DigestFixture.State.Current.Cancel.Token;
         public void Note(string _) { }
+        public static string? GameVersion(string folder) => null;
         public void BeginUpdate(string folder, string? tag) { }
+        public void NothingToUpdate(string folder) => throw new Exception("Unexpected nothing-to-update path.");
         public void UpdateBuild(Tools tools, string folder) => throw new Exception("Unexpected real build path.");
         public void DownloadProgress(double value) => DigestFixture.State.Current.Progress.Add(value);
         public void DownloadFailed(string reason) => DigestFixture.State.Current.Outcome.TrySetResult(reason);

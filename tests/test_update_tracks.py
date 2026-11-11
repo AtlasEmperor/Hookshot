@@ -189,9 +189,16 @@ class Tracks(unittest.TestCase):
         self.assertEqual(linux_update.choose_mode(None, "v2.1.0-rc.1", "v2.0.14", False, False, True), "update-builder")
         self.assertEqual(linux_update.choose_mode("v2.1.0-rc.1", "v2.1.0-rc.1", "v2.1.0-rc.2", False, True), "update-game")
 
-    def test_the_builders_offer_an_update_only_through_the_game_rule(self):
+    def test_the_builders_offer_and_build_a_folder_only_through_the_game_rule(self):
+        updater = (ROOT / "builder/HookshotBuilder/Updater.cs").read_text(encoding="utf-8")
         window = (ROOT / "builder/HookshotBuilder/MainWindow.xaml.cs").read_text(encoding="utf-8")
         linux = (ROOT / "builder/linux/hookshot_builder.py").read_text(encoding="utf-8")
+        # (the game's offer, --update <folder> --tag <release>, builds the folder only where this rule says it needs it)
+        self.assertEqual(updater.count("w.UpdateBuild("), 1)
+        self.assertEqual(updater.count("BuildFolder(w, tools, folder, fetched, named);"), 2)
+        build_folder = updater[updater.index("static void BuildFolder("):]
+        self.assertIn("!fetched && tools.Version != null && game != null && !GameNeedsUpdate(game, tools.Version, named)",
+                      build_folder[:build_folder.index("w.UpdateBuild(")])
         # (the window and the launcher page offer the update by the same rule)
         self.assertEqual(window.count("Updater.GameNeedsUpdate(game, updateTarget, Switching)"), 3)
         self.assertNotIn("game != updateTarget", window)

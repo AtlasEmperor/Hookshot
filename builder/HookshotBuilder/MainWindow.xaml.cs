@@ -131,7 +131,7 @@ public partial class MainWindow : Window
     bool sourcePicked;   // (the player chose game files here: a build from them, even over a game that is up to date)
 
     /// The release a game folder was built with (its hookshot_version.txt), when it keeps its game files for updates
-    static string? GameVersion(string folder)
+    internal static string? GameVersion(string folder)
     {
         try
         {
@@ -1296,6 +1296,16 @@ public partial class MainWindow : Window
         rows["download"].Begin();
         CancelButton.Visibility = Visibility.Visible;
         ShowPage(BuildPage);
+    }
+
+    /// The game's offer named a release the folder does not need: the folder is already what these tools build.
+    /// The launcher page shows it.
+    internal void NothingToUpdate(string folder)
+    {
+        download = null;
+        updating = false;
+        VersionChip.Visibility = Visibility.Collapsed;
+        ShowLauncher(folder);
     }
 
     public CancellationToken DownloadToken => (download = new CancellationTokenSource()).Token;

@@ -956,6 +956,7 @@ class Builder(tk.Tk):
             self.update_folder = folder
         self.show_progress("Updating your game" if self.update_folder else "Updating Hookshot Builder")
         folder = self.update_folder
+        offer = bool(self.update_tag) and not self.fetched   # (the game's offer: --update <folder> --tag <release>)
         # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer. So is one
         # from a builder that is not an older release, e.g. from the Actions tab: issue 902)
         target = self.update_tag or linux_update.update_target(self.latest, self.tools, self.switching())
@@ -968,7 +969,8 @@ class Builder(tk.Tk):
                     if root is None:
                         raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update.")
                     # (another track's build, or a Track switch: that version's own list)
-                    named = target if target and (self.switching() or linux_update.track_of(target) != "release") else None
+                    chosen = self.switching() and not offer   # (a Track the player chose: not the game's offer, which follows the folder's track)
+                    named = target if target and (chosen or linux_update.track_of(target) != "release") else None
                     manifest = linux_update.startup_manifest(root, tag=named)
                     if manifest.tag != linux_update.tools_tag(root):
                         # (as Windows does: GitHub's latest list lags right after a publish, and installing it would put
@@ -984,6 +986,9 @@ class Builder(tk.Tk):
                         if folder:
                             args += ["--update", folder, "--tag", manifest.tag, "--fetched"]
                         os.execv(apprun, args)
+                if offer and folder and self.tools and not linux_update.game_needs_update(linux_update.game_version(folder)[0], self.tools):
+                    self.lines.put(("up-to-date", folder))   # (the offer named another release: the folder is what these tools build)
+                    return
                 self.lines.put(("do-build", folder or ""))
             except Exception as error:
                 self.lines.put(("update-error", str(error)))
@@ -1147,6 +1152,10 @@ class Builder(tk.Tk):
                         self.stage_text.set(v)
                 elif kind == "do-build":
                     self.start_make_update(v)
+                elif kind == "up-to-date":
+                    self.update_tag = None
+                    self.launch_folder = v
+                    self.show_launch(v)
                 elif kind == "update-error":
                     if hasattr(self, "stage_text"):
                         self.stage_text.set(v + " Your game folder is unchanged.")
