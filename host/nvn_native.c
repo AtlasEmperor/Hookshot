@@ -310,6 +310,25 @@ NV(nvnMemoryPoolInitialize) {
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
     RET(1);
 }
+/* (hookshot) A memory pool moved to new storage of the host's while the game runs (host/oot_window_grow.c): its object
+   initialized again over it, as nvnMemoryPoolInitialize does, its flags kept. The storage before is left to the caller */
+void hos_nvn_pool_rehome(uint64_t pool, uint64_t storage, uint64_t size) {
+    nvn_pool *o = (nvn_pool *)gw(pool, sizeof(nvn_pool));
+    if (o->magic != NVN_MAGIC('P', 'O', 'O', 'L') || !o->mem) die("pool %#llx moved: not a pool with storage", (unsigned long long)pool);
+    gw(storage, size);
+    const uint64_t before = o->mem;
+    hos_gpu_track(o->gpu, o->size, 0);
+    o->mem = storage, o->gpu = storage, o->size = size;
+    hos_gpu_track(o->gpu, o->size, 1);
+    rx_nvn_pool_created(o->gpu, o->size);
+    hos_log("nvn: pool %#llx moved from %#llx over %#llx, %#llx bytes (flags %#x)", (unsigned long long)pool,
+            (unsigned long long)before, (unsigned long long)storage, (unsigned long long)size, o->flags);
+}
+/* (hookshot) A pool's size in bytes, 0 for no pool */
+uint64_t hos_nvn_pool_size(uint64_t pool) {
+    const nvn_pool *o = pool ? (const nvn_pool *)gw(pool, sizeof(nvn_pool)) : NULL;
+    return o && o->magic == NVN_MAGIC('P', 'O', 'O', 'L') ? o->size : 0;
+}
 /* (hookshot) A memory-pool call made with no pool: the game passed 0 while the banc changed (thread
    OptimizeChangeBanc, Kakariko's day/night transition), and flags at +4 of it crashed. 0 then, and who asked, once.
    P(0) returns NULL for a 0 argument, but dereferencing that NULL is undefined behaviour: the compiler folds the
@@ -714,6 +733,13 @@ NV(nvnTextureInitialize) {
     memcpy(o->layout, b->layout, 8);
     nvn_tex_layout(&o->d, &o->L);
     o->gpu = b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0;
+    if (b->pool && POOL(b->pool)->mem && (uint64_t)b->off + o->L.size > POOL(b->pool)->size) {   /* (a texture its pool cannot hold) */
+        static volatile LONG told;
+        if (InterlockedIncrement(&told) <= 8)
+            hos_log("nvn: texture %ux%u format %#x past its pool: at +%#llx, %#llx bytes, the pool %#llx", o->d.width, o->d.height,
+                    o->d.format, (unsigned long long)b->off, (unsigned long long)o->L.size,
+                    (unsigned long long)POOL(b->pool)->size);
+    }
     if (b->pkg_data) {   /* packaged data: copied into the storage (a CPU write the dirty tracking sees) */
         if (!o->gpu || !nvn_gpu_write(o->gpu, gw(b->pkg_data, o->L.size), o->L.size)) die("packaged texture data without storage");
     }
@@ -2436,6 +2462,19 @@ NV(nvnWindowInitialize) {
     RET(1);
 }
 NV(nvnWindowFinalize) {}
+/* (hookshot) What a window's textures take at width x height, each at a 64 KB boundary: the storage host/oot_window_grow.c gives
+   the window's pool. Measured in NVN_FORMAT_RGBA16F, 8 bytes a texel, twice its SDR and HDR10 formats' (NVN_FORMAT_RGBA8,
+   NVN_FORMAT_RGB10A2): room for a 16-bit float window too. 0: not a window */
+enum { WINDOW_TEXTURE_ALIGN = 0x10000 };
+uint64_t hos_nvn_window_need(uint64_t window, uint32_t width, uint32_t height) {
+    const nvn_win *o = window ? (const nvn_win *)gw(window, sizeof(nvn_win)) : NULL;
+    if (!o || o->magic != NVN_MAGIC('W', 'I', 'N', 'D')) return 0;
+    nvn_texdesc d = win_tex(o, 0)->d;
+    nvn_texlayout layout;
+    d.width = width, d.height = height, d.format = NVN_FORMAT_RGBA16F;
+    nvn_tex_layout(&d, &layout);
+    return (uint64_t)o->ntex * ((layout.size + WINDOW_TEXTURE_ALIGN - 1) & ~(uint64_t)(WINDOW_TEXTURE_ALIGN - 1));
+}
 NV(nvnWindowSetDebugLabel) {}
 NV(nvnWindowSetNumActiveTextures) { nvn_win *o = (nvn_win *)P(0); if (I(1) < 2 || I(1) > o->ntex) die("%d active window textures", I(1)); o->active = I(1); }
 NV(nvnWindowGetNumActiveTextures) { const nvn_win *o = (const nvn_win *)P(0); RET((uint32_t)(o->active ? o->active : o->ntex)); }
