@@ -2736,6 +2736,15 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
     });
 }
 
+VkImageView texture_level_storage_view(Texture* tex, uint32_t level, uint32_t layer) {
+    constexpr uint64_t kLevelStorageViewKey = 0x5702;   // (these views' key space among the texture's)
+    const uint64_t key = mix(mix(kLevelStorageViewKey, level), layer);
+    return cached_image_view(tex, key, [&](VkResult* result) {
+        return make_view(tex, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1, {},
+                         VK_IMAGE_USAGE_STORAGE_BIT, result);
+    });
+}
+
 bool texture_copy_into_bc(VkCommandBuffer cmd, Texture* src, uint32_t src_level, uint32_t src_layer, int sx, int sy,
                           Texture* dst, uint32_t dst_level, uint32_t dst_layer, int dx, int dy, uint32_t w, uint32_t h,
                           uint32_t layers) {

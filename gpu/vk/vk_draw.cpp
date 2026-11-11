@@ -6017,21 +6017,30 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     }
     if (!pipe) return;
     const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
-    // (the mask's own storage view at that level and layer, made once a texture and level)
-    static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
-    VkImageView& mv = views[{tex->image, level, layer}];
-    if (!mv) {
-        VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        vc.image = tex->image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = VK_FORMAT_R8G8B8A8_UNORM;
-        vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer, 1};
-        if (vkCreateImageView(dev.device, &vc, nullptr, &mv) != VK_SUCCESS) { mv = VK_NULL_HANDLE; return; }
-    }
+    // (the mask's own storage view at that level and layer: the texture's, destroyed with it)
+    const VkImageView mv = texture_level_storage_view(tex, level, layer);
+    if (!mv) return;
     static VkImage hist[2] = {};
     static VmaAllocation hist_mem[2] = {};
     static VkImageView hist_view[2] = {};
     static uint32_t hist_w = 0, hist_h = 0, cur = 0;
     static uint64_t hist_frame = 0;
+    // (a pair a new size replaced: destroyed once the GPU has passed every recording that may still use it)
+    struct OldHistory { uint64_t done_at; VkImage image; VmaAllocation memory; VkImageView view; };
+    static std::vector<OldHistory> old_hist;
+    const uint64_t completed = vk_timeline_completed();
+    for (size_t i = 0; i < old_hist.size();) {
+        if (!old_hist[i].done_at || completed < old_hist[i].done_at) { i++; continue; }
+        if (old_hist[i].view) vkDestroyImageView(dev.device, old_hist[i].view, nullptr);
+        destroy_image(old_hist[i].image, old_hist[i].memory);
+        old_hist[i] = old_hist.back();
+        old_hist.pop_back();
+    }
     if (hist_w != w || hist_h != h) {
+        for (size_t i = 0; i < std::size(hist); i++) {
+            if (hist[i]) old_hist.push_back({vk_retirement_value(), hist[i], hist_mem[i], hist_view[i]});
+            hist[i] = VK_NULL_HANDLE, hist_mem[i] = nullptr, hist_view[i] = VK_NULL_HANDLE;
+        }
         for (int i = 0; i < 2; i++) {
             VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             ic.imageType = VK_IMAGE_TYPE_2D, ic.format = VK_FORMAT_R8G8B8A8_UNORM;

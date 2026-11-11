@@ -141,6 +141,9 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling);
 enum class ViewUse { Sample, Attachment, Storage };
 VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkImageViewType view_type, ViewUse use,
                          VkFormat* format_out = nullptr, VkFormat force_format = VK_FORMAT_UNDEFINED);
+/// (hookshot) An RGBA8 storage view of one level and layer, as a 2D image, for a pass of the renderer's own: kept with the
+/// texture's other views, and destroyed with them
+VkImageView texture_level_storage_view(Texture* tex, uint32_t level, uint32_t layer);
 /// (hookshot) The format rules texture_get and texture_view follow (vk_texture.cpp), shared with the pipeline state list
 VkFormat image_format_of(VkFormat vf, bool astc_decoded);
 VkFormat view_format_of(VkFormat image, bool astc_decoded, bool bc, int view_nvn, ViewUse use, VkFormat force_format);
