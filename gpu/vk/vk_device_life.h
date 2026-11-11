@@ -97,9 +97,10 @@ void device_use_yield();
 /// gate here, so the game's next call waits for it
 void device_frame_end();
 
-/// The Insert menu's GPU device or Robust buffers row changed (rows in use: what took effect, for the way back on a failure).
-/// A thread of its own makes the device again once the rows rest, when the effective choice differs from the device in use
-void device_rebuild_request(int gpu_row_in_use, int robust_row_in_use);
+/// The Insert menu's GPU device, Robust buffers or Mesh shaders row changed (rows in use: what took effect, for the way back on a
+/// failure). A thread of its own makes the device again once the rows rest, when the choice differs from the device in use
+/// (device_change.h)
+void device_rebuild_request(int gpu_row_in_use, int robust_row_in_use, int mesh_row_in_use);
 /// The last request's outcome: seq counts the outcomes (0: none yet); the rows that took effect (the ones asked for, or the
 /// ones before on a failure), the change asked for, what the player is told, and the time the game was held when the device
 /// was made again
@@ -107,7 +108,7 @@ struct DeviceRebuildOutcome {
     uint64_t seq = 0;
     bool ok = true, rebuilt = false;
     device_change::Change change = device_change::Change::None;
-    int gpu_row = 0, robust_row = 0;
+    int gpu_row = 0, robust_row = 0, mesh_row = 0;
     const char* text = "";   // (a static string)
     double pause_ms = 0;
 };

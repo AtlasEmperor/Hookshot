@@ -1,9 +1,13 @@
-"""The Insert menu's GPU device and Robust buffers rows while the game runs, no game or GPU (gpu/vk/vk_menu.cpp saved_value,
-hn_gpu, hn_robust and device_tick, gpu/vk/rows_script.h): the ini keeps the rows the device in use was made with; each row's
-hint says why it went back after a failed change of it, and the Robust buffers hint says when the GPU in use offers no
-robustness to turn on; a device rebuild is asked for at each change of the rows, so that it waits until they rest, never
-while the start-up screen is up, and its outcome is kept or the rows put back; RX_VK_ROWS's entries come due at their frames, sizes read as written. The menu's
-functions are compiled as they are, beside stand-ins for the menu's options, the device and the rebuild.
+"""The Insert menu's GPU device, Robust buffers and Mesh shaders rows while the game runs, no game or GPU.
+
+gpu/vk/vk_menu.cpp saved_value, hn_gpu, hn_robust, hn_mesh_mode and device_tick, gpu/vk/rows_script.h.
+The ini keeps the rows the device in use was made with.
+Each row's hint says why it went back after a failed change of it.
+The Robust buffers hint says when the GPU in use offers no robustness to turn on.
+A device rebuild is asked for at each change of the rows, so that it waits until they rest, never while the start-up screen is up.
+Its outcome is kept or the rows put back.
+RX_VK_ROWS's entries come due at their frames, sizes read as written.
+The menu's functions are compiled as they are, beside stand-ins for the menu's options, the device and the rebuild.
 
 python -I -B tests/test_device_rows.py [--cxx g++]
 """
@@ -29,23 +33,23 @@ FIXTURE = r"""
 #define CHECK(x) do { if (!(x)) { std::printf("FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
 using namespace mkwvk;
 struct Row { int tab; const char* name; int* value; };
-struct { int gpu_device = 0, robust = 0, framegen = 0; } opts;
+struct { int gpu_device = 0, robust = 0, mesh_mode = 0, framegen = 0; } opts;
 struct { void* device = nullptr; bool robust_buffers = false, robust_offered = false; } dev;
 struct DeviceRebuildOutcome {
     uint64_t seq = 0;
     bool ok = true, rebuilt = false;
     device_change::Change change = device_change::Change::None;
-    int gpu_row = 0, robust_row = 0;
+    int gpu_row = 0, robust_row = 0, mesh_row = 0;
     const char* text = "";
 };
 DeviceRebuildOutcome outcome;
 DeviceRebuildOutcome device_rebuild_outcome() { return outcome; }
-int gpu_device_in_effect = -1, robust_in_effect = -1;
+int gpu_device_in_effect = -1, robust_in_effect = -1, mesh_in_effect = -1;
 bool menu_refresh = false;
 std::atomic<bool> startup_on{false};
 int saves = 0, requests = 0;
 void save() { saves++; }
-void device_rebuild_request(int, int) { requests++; }
+void device_rebuild_request(int, int, int) { requests++; }
 DeviceRebuildOutcome failed(uint64_t seq, device_change::Change change, const char* text) {
     DeviceRebuildOutcome o;
     o.seq = seq, o.ok = false, o.rebuilt = true, o.change = change, o.text = text;
@@ -56,10 +60,12 @@ DeviceRebuildOutcome failed(uint64_t seq, device_change::Change change, const ch
 int main() {
     // (the ini: the rows the device in use was made with; the live ones before the first device, and every other row's own)
     Row gpu{0, "GPU device", &opts.gpu_device}, robust{0, "Robust buffers", &opts.robust}, other{0, "Frame generation", &opts.framegen};
-    opts.gpu_device = 2, opts.robust = 1, opts.framegen = 3;
-    CHECK(saved_value(gpu) == 2 && saved_value(robust) == 1 && saved_value(other) == 3);
-    gpu_device_in_effect = 1, robust_in_effect = 0;
-    CHECK(saved_value(gpu) == 1 && saved_value(robust) == 0 && saved_value(other) == 3);
+    Row mesh{0, "Mesh shaders", &opts.mesh_mode};
+    opts.gpu_device = 2, opts.robust = 1, opts.mesh_mode = 2, opts.framegen = 3;
+    CHECK(saved_value(gpu) == 2 && saved_value(robust) == 1 && saved_value(mesh) == 2 && saved_value(other) == 3);
+    gpu_device_in_effect = 1, robust_in_effect = 0, mesh_in_effect = 1;
+    CHECK(saved_value(gpu) == 1 && saved_value(robust) == 0 && saved_value(mesh) == 1 && saved_value(other) == 3);
+    opts.mesh_mode = 0;
 
     // (Robust buffers: a GPU in use without VK_EXT_robustness2 runs it off; the row's own hint where it runs as asked, or Off
     // asked, and while a change to it is still to be made on a GPU that offers it)
@@ -82,11 +88,19 @@ int main() {
     CHECK(!strcmp(hn_robust(0, -1), outcome.text) && !strcmp(hn_robust(0, 1), outcome.text) && !hn_gpu(1, -1));
     outcome.ok = true;
     CHECK(!hn_gpu(1, -1) && strcmp(hn_robust(0, -1), outcome.text));
+    CHECK(hn_mesh_mode(2, -1) && strstr(hn_mesh_mode(2, -1), "compute path on every GPU") && !hn_mesh_mode(3, -1));
+    outcome = failed(3, device_change::Change::MeshShaders,
+                     "the mesh shaders asked for failed to set up: the device before was set up again");
+    CHECK(!strcmp(hn_mesh_mode(1, -1), outcome.text) && !strcmp(hn_mesh_mode(1, 0), outcome.text) && hn_mesh_mode(1, 1) &&
+          !hn_mesh_mode(1, 2));
+    CHECK(strcmp(hn_robust(0, -1), outcome.text) && !hn_gpu(1, -1));
+    outcome.ok = true;
+    CHECK(strcmp(hn_mesh_mode(1, -1), outcome.text));
 
     // (device_tick: a request at each change of the rows, so that the rebuild waits until they rest; none while they rest
     // or match the device in use; the rows in effect kept, or put back after a failure)
     outcome = DeviceRebuildOutcome{};
-    gpu_device_in_effect = 0, robust_in_effect = 0, opts.gpu_device = 0, opts.robust = 0;
+    gpu_device_in_effect = 0, robust_in_effect = 0, mesh_in_effect = 0, opts.gpu_device = 0, opts.robust = 0, opts.mesh_mode = 0;
     device_tick();
     CHECK(requests == 0 && saves == 0);
     opts.gpu_device = 1;
@@ -120,6 +134,26 @@ int main() {
     startup_on = false;
     device_tick();
     CHECK(requests == 5);
+    // (the Mesh shaders row: a request at its change too, its outcome kept, or the row put back after a failure)
+    outcome = DeviceRebuildOutcome{};
+    outcome.seq = 3, outcome.gpu_row = 2, outcome.robust_row = 1;
+    device_tick();
+    CHECK(robust_in_effect == 1 && saves == 3);
+    opts.mesh_mode = 2;
+    device_tick();
+    device_tick();
+    CHECK(requests == 6);
+    outcome = failed(4, device_change::Change::MeshShaders, "x");
+    outcome.gpu_row = 2, outcome.robust_row = 1, outcome.mesh_row = 0;
+    device_tick();
+    CHECK(opts.mesh_mode == 0 && mesh_in_effect == 0 && saves == 4 && requests == 6);
+    opts.mesh_mode = 1;
+    device_tick();
+    outcome = DeviceRebuildOutcome{};
+    outcome.seq = 5, outcome.rebuilt = true, outcome.change = device_change::Change::MeshShaders, outcome.gpu_row = 2,
+    outcome.robust_row = 1, outcome.mesh_row = 1;
+    device_tick();
+    CHECK(requests == 7 && mesh_in_effect == 1 && opts.mesh_mode == 1 && saves == 5);
 
     // (RX_VK_ROWS: each entry at its shown frame, the list on after it, a malformed one left for the log)
     const char* next = "3:robust_buffers=1,5:gpu_device=2,5:output_res=3840x2160";
@@ -150,14 +184,15 @@ def main():
     parser.add_argument("--cxx", default="g++")
     args = parser.parse_args()
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    for name, value in (("GPU device", "gpu_device"), ("Robust buffers", "robust")):
+    for name, value in (("GPU device", "gpu_device"), ("Robust buffers", "robust"), ("Mesh shaders", "mesh_mode")):
         at = menu.index('"%s", &opts.%s,' % (name, value), menu.index("Row rows[] = {"))
         if "restart" in menu[at:menu.index("},", at)]:
             raise SystemExit("vk_menu.cpp: the %s row still says it takes a restart" % name)
     if not re.search(r"fprintf\(f, \"%s=%d\\n\", ini_key\(r\), saved_value\(r\)\);", menu):
         raise SystemExit("vk_menu.cpp: save does not write the rows as the device in use was made with them")
     code = "\n".join(function(menu, s) for s in ("int saved_value(const Row& r) {", "const char* hn_gpu(int v, int variant) {",
-                                                 "const char* hn_robust(int v, int variant) {", "void device_tick() {"))
+                                                 "const char* hn_robust(int v, int variant) {",
+                                                 "const char* hn_mesh_mode(int v, int variant) {", "void device_tick() {"))
     hint_in = function(menu, "const char* hint_in(")
     with tempfile.TemporaryDirectory(prefix="device-rows-") as tmp:
         tmp = Path(tmp)
@@ -168,7 +203,8 @@ def main():
         out = subprocess.run([str(exe)], capture_output=True, text=True)
         if out.returncode:
             raise SystemExit(out.stdout + out.stderr)
-    print("PASS: the device rows saved as the device in use was made with them, their hints, a request at each change and the "
+    print("PASS: the GPU device, Robust buffers and Mesh shaders rows saved as the device in use was made with them, their "
+          "hints, a request at each change and the "
           "outcome kept or put back, RX_VK_ROWS's entries at their frames")
 
 

@@ -161,14 +161,18 @@ int main() {
     CHECK(device_gate_close(std::chrono::steady_clock::now() + 1s));
     device_gate_open();
 
-    // The decision: another GPU, the same GPU with the robustness crossing Off, or nothing (no GPU listed: the one in use stays).
+    // The decision: another GPU, the same GPU with the robustness crossing Off or other mesh shaders, or nothing (no GPU
+    // listed: the one in use stays).
     using device_change::Change;
     int a = 0, b = 0;
-    CHECK(device_change::needed(&a, true, &b, true) == Change::Gpu);
-    CHECK(device_change::needed(&a, true, &a, false) == Change::Robustness);
-    CHECK(device_change::needed(&a, false, &a, true) == Change::Robustness);
-    CHECK(device_change::needed(&a, true, &a, true) == Change::None);
-    CHECK(device_change::needed(&a, true, nullptr, false) == Change::None);
+    CHECK(device_change::needed(&a, true, 0, &b, true, 0) == Change::Gpu);
+    CHECK(device_change::needed(&a, true, 0, &b, true, 2) == Change::Gpu);
+    CHECK(device_change::needed(&a, true, 0, &a, false, 0) == Change::Robustness);
+    CHECK(device_change::needed(&a, false, 0, &a, true, 0) == Change::Robustness);
+    CHECK(device_change::needed(&a, true, 0, &a, true, 2) == Change::MeshShaders);
+    CHECK(device_change::needed(&a, true, 2, &a, true, 1) == Change::MeshShaders);
+    CHECK(device_change::needed(&a, true, 1, &a, true, 1) == Change::None);
+    CHECK(device_change::needed(&a, true, 0, nullptr, false, 2) == Change::None);
     std::puts("PASS: steps in order, latches and thread caches per device, the gate with uses in progress and at a frame's end, "
               "the rebuild's decision");
 }
