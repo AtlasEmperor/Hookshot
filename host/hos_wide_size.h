@@ -8,10 +8,16 @@
 #include <math.h>
 #include <stdint.h>
 
+/* The Output resolutions the host and the menu accept: at least 640 x 360, at most 5120 x 2880's pixels. */
+enum { HOS_OUTPUT_MIN_WIDTH = 640, HOS_OUTPUT_MIN_HEIGHT = 360, HOS_OUTPUT_MAX_PIXELS = 5120 * 2880 };
+/* Their shapes, width to height: from the narrowest, 5:4, to the widest, 48:9. */
+enum { HOS_OUTPUT_NARROWEST_W = 5, HOS_OUTPUT_NARROWEST_H = 4, HOS_OUTPUT_WIDEST_W = 48, HOS_OUTPUT_WIDEST_H = 9 };
+
 /* The host and the menu accept the same custom output shapes and pixel budget. */
 static inline int hos_output_size_valid(uint32_t w, uint32_t h) {
-    return w >= 640 && h >= 360 && (uint64_t)w * h <= 5120ULL * 2880 &&
-           (uint64_t)w * 4 >= (uint64_t)h * 5 && (uint64_t)w * 9 <= (uint64_t)h * 48;
+    return w >= HOS_OUTPUT_MIN_WIDTH && h >= HOS_OUTPUT_MIN_HEIGHT && (uint64_t)w * h <= HOS_OUTPUT_MAX_PIXELS &&
+           (uint64_t)w * HOS_OUTPUT_NARROWEST_H >= (uint64_t)h * HOS_OUTPUT_NARROWEST_W &&
+           (uint64_t)w * HOS_OUTPUT_WIDEST_H <= (uint64_t)h * HOS_OUTPUT_WIDEST_W;
 }
 
 static inline int hos_output_is_surround(uint32_t w, uint32_t h) {
