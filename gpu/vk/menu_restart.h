@@ -1,13 +1,13 @@
-/* The Insert menu's rows that take a restart (vk_menu.cpp: GPU device, Output resolution, Profile, Ultrawide,
-   Robust buffers), as plain code: which of them differ from what the game started with, whether closing the menu asks to
-   restart, and the rows' names as the menu lists them. No Vulkan, no menu: tests/test_menu_restart.cpp checks it. */
+/* The Insert menu's rows that take a restart, as plain code: Output resolution, Ultrawide, Audio output, Button prompts (vk_menu.cpp).
+   Which rows differ from what the game started with, whether closing the menu asks to restart, the rows' names as the menu lists them.
+   No Vulkan, no menu: tests/test_menu_restart.cpp checks it. */
 #pragma once
 
 #include <string>
 
 namespace mkwvk::menu_restart {
 
-constexpr int kMax = 16;   // (rows that take a restart: the menu has ten; a row past kMax would have no slot)
+constexpr int kMax = 16;   // (rows that take a restart: the menu has four; a row past kMax would have no slot)
 
 struct State {
     int n = 0;
