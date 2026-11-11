@@ -35,7 +35,7 @@ static int64_t next_frame_at, window_start, frames_in_window, shown_at[16];
 static volatile LONG64 presents, shown_count;
 static volatile uint64_t hos_mkw_pacer;
 static uint32_t guest32;
-static int scans, steps, sleeps, reads;
+static int scans, steps, sleeps, reads, applet_checks;
 static int64_t clock_now;
 typedef struct { int unused; } nvn_tex;
 typedef struct { int ntex, crop[4], presents; } nvn_win;
@@ -65,6 +65,7 @@ static void scan_dt(long long frame) { (void)frame; ++scans; }
 static void realtime_step(int64_t now) { (void)now; ++steps; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static uint64_t hos_ticks(void) { return 0; }
+void hos_applet_presented(void) { ++applet_checks; }
 static int fps_max(void) { return 60; }   /* (nn_vi.c's Frame rate cap: the console's 60 here) */
 '''
 
@@ -90,6 +91,7 @@ int main(int argc, char **argv) {
     }
     if (presents != 5 || shown_count != 5 || scans != 5 || steps != 5 || sleeps != 0 ||
         reads != (enabled ? 25 : 5) || window.presents != 5 || hos_present_count != 5) return 3;
+    if (applet_checks != 5) return 5; /* the display settings are checked at every present */
     printf("STATE %lld %lld %lld %d %d %d\n", (long long)presents, (long long)shown_count,
            (long long)next_frame_at, scans, steps, sleeps);
     if (!enabled) {

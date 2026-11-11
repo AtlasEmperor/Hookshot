@@ -470,6 +470,8 @@ static void present_trace(int64_t frame, int64_t now, const int64_t phases[4]) {
 void hos_vi_native_presented(const int64_t phases[4]) {
     static long long scan_n;
     scan_dt(++scan_n);
+    void hos_applet_presented(void);
+    hos_applet_presented();   /* (hookshot: the Insert menu's Profile and Output resolution, host/nn_applet.c) */
     {   /* HOS_FRAME_SLEEP_MS (diagnostic): slower frames, for game speed against frame rate */
         static int ms = -1;
         if (ms < 0) ms = getenv("HOS_FRAME_SLEEP_MS") ? atoi(getenv("HOS_FRAME_SLEEP_MS")) : 0;
