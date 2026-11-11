@@ -2751,50 +2751,38 @@ bool slow_desc_timing() {
     return on;
 }
 
-// (hookshot) one switch read two ways, like the Robust buffers row of vk_main.cpp: the environment variable says it for test
-// runs (any value, 0 off); else the row's line in hookshot_options.ini beside the game; else off.
-/// (the row's value in hookshot_options.ini, read before the menu has loaded it; the environment's switch first. def: no
-/// file, no line, or a file older than options_version since (one whose line was only ever the old default, vk_menu.cpp
-/// load))
-bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = false, int since = 0) {
-    if (const char* e = getenv(env_name)) return atoi(e) != 0;
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);   // (the game folder, not bin beside the launcher: vk_paths.h)
-    std::string ini(exe, n);
-    ini = ini.substr(0, ini.find_last_of("\\/") + 1) + "hookshot_options.ini";
-    const size_t klen = strlen(ini_key_name);
-    int v = -1, version = 0;
-    if (FILE* f = fopen(ini.c_str(), "r")) {
-        char line[80];
-        while (fgets(line, sizeof line, f)) {
-            if (!strncmp(line, ini_key_name, klen) && line[klen] == '=') v = atoi(line + klen + 1);
-            if (!strncmp(line, "options_version=", 16)) version = atoi(line + 16);
-        }
-        fclose(f);
-    }
-    if (v < 0 || version < since) return def;
-    return v != 0;
-}
-/// (hookshot) the Descriptor reuse row / RX_VK_DESC_SLOTGEN=1: a draw keeps its descriptors through registrations of the
-/// texture slots it does not sample. What it does sample is checked by slot version, and the samplers by their
-/// registrations' generation, instead of the global one every registration moves. Its ready line is like the frame interpolation's.
+/// (hookshot) the Descriptor reuse row, RX_VK_DESC_SLOTGEN over it (any value, 0 off), read at each use: a draw keeps its
+/// descriptors through registrations of the texture slots it does not sample. What it does sample is checked by slot version,
+/// and the samplers by their registrations' generation, instead of the global one every registration moves. Its ready line is
+/// like the frame interpolation's. A change of the choice moves desc_slotgen_generation: descriptors built under the other
+/// choice are built again (their slots' versions were not noted while it was off)
+std::atomic<uint64_t> desc_slotgen_gen{0};
+uint64_t desc_slotgen_generation() { return desc_slotgen_gen.load(std::memory_order_acquire); }
 bool desc_slotgen_on() {
-    static int on = -1;
-    if (on < 0) {
-        on = menu_env_on("RX_VK_DESC_SLOTGEN", "descriptor_reuse", true, 4);   // (on by default since options_version 4)
+    static const char* const env = getenv("RX_VK_DESC_SLOTGEN");
+    const bool on = env ? atoi(env) != 0 : opts.descriptor_reuse != 0;
+    static std::atomic<int> was{-1};   // (the choice last seen: -1 none yet)
+    if (const int before = was.exchange(on ? 1 : 0); before != (on ? 1 : 0)) {
+        desc_slotgen_gen.fetch_add(1, std::memory_order_acq_rel);
         if (on)
             logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
                  "sample (menu: Descriptor reuse)");
+        else if (before >= 0)
+            logf("vk: descriptor slotgen off: draws build their descriptors again at each registration (menu: Descriptor reuse)");
     }
     return on;
 }
-/// (hookshot) the Sampler cache row / RX_VK_SAMPLER_CACHE=1: what a sampler id holds is kept next to its version on the replay
-/// thread, so resolving an id that was not registered anew takes no lock (the registrations' mutex contends with the texture streaming)
+/// (hookshot) the Sampler cache row, RX_VK_SAMPLER_CACHE over it (any value, 0 off), read at each use: what a sampler id holds is
+/// kept next to its version on the replay thread, so resolving an id that was not registered anew takes no lock (the
+/// registrations' mutex contends with the texture streaming). An entry is checked against its id's version at each use, so one
+/// kept before the row was turned off and on again is never taken for a newer registration
 bool sampler_cache_on() {
-    static int on = -1;
-    if (on < 0) {
-        on = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
+    static const char* const env = getenv("RX_VK_SAMPLER_CACHE");
+    const bool on = env ? atoi(env) != 0 : opts.sampler_cache != 0;
+    static std::atomic<int> was{-1};   // (the choice last seen: -1 none yet)
+    if (const int before = was.exchange(on ? 1 : 0); before != (on ? 1 : 0)) {
         if (on) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
+        else if (before >= 0) logf("vk: sampler cache off: sampler ids answer their parameters under the registrations' lock (menu: Sampler cache)");
     }
     return on;
 }
@@ -3728,6 +3716,7 @@ thread_local bool work_since_barrier = false;   // (GPU work recorded since the 
 thread_local bool last_desc_valid = false;
 thread_local const Program* last_desc_prog = nullptr;
 thread_local uint64_t last_desc_bind = 0, last_desc_reg = 0, last_desc_ub = 0, last_desc_dgen = 0;
+thread_local uint64_t last_desc_slotgen_gen = 0;   // (desc_slotgen_generation when the bound descriptors were built)
 // (RX_VK_DESC_SLOTGEN: the versions of the slots the last build resolved, the samplers' generation it saw, and whether it
 // sampled an unregistered slot; the same draw keeps its descriptors while none of those moved)
 TLS_OBJECT(last_desc_fp, std::vector<uint64_t>)
@@ -6355,8 +6344,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
     // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
     const bool slotgen = desc_slotgen_on();
+    const uint64_t slotgen_gen = desc_slotgen_generation();
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_ub == ub_gen && last_desc_dgen == dgen &&
+                           last_desc_ub == ub_gen && last_desc_dgen == dgen && last_desc_slotgen_gen == slotgen_gen &&
                            (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
                            (!p.fallback || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
@@ -6487,7 +6477,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_BINDDESC);
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
-        last_desc_ub = ub_gen, last_desc_dgen = dgen;
+        last_desc_ub = ub_gen, last_desc_dgen = dgen, last_desc_slotgen_gen = slotgen_gen;
         if (slotgen)   // (RX_VK_DESC_SLOTGEN: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;
