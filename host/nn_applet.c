@@ -172,14 +172,16 @@ static uint32_t display_size_of(int output, int height) {   /* (its display size
     return height ? (uint32_t)output & HOS_OUTPUT_HEIGHT_MASK : (uint32_t)output >> HOS_OUTPUT_WIDTH_SHIFT;
 }
 uint32_t hos_output_size(int height) { return display_size_of(boot_output(), height); }
+uint32_t hos_live_output_size(int height);   /* (below: the display size the running game has) */
 /* (hookshot) The frame's cap, width | height << 32 (nx2/oot_patches.py: f_8114c5e0, the game's table by class and scale).
    Docked at scale x1 the game caps at 3840 x 2160, under the larger outputs.
-   Only a frame the game makes again takes the cap (a Handheld switch back to docked): raised to the output, it keeps its size. */
+   Only a frame the game makes again takes the cap (a Handheld switch back to docked, an Output resolution changed while it
+   runs): raised to the running output, it keeps its size. */
 static const uint32_t DOCKED_FRAME_CAP_WIDTH = 3840, DOCKED_FRAME_CAP_HEIGHT = 2160;
 uint64_t hos_frame_cap(uint64_t cap) {
     if (cap != ((uint64_t)DOCKED_FRAME_CAP_HEIGHT << 32 | DOCKED_FRAME_CAP_WIDTH)) return cap;
-    const uint32_t w = hos_output_size(0) > DOCKED_FRAME_CAP_WIDTH ? hos_output_size(0) : DOCKED_FRAME_CAP_WIDTH;
-    const uint32_t h = hos_output_size(1) > DOCKED_FRAME_CAP_HEIGHT ? hos_output_size(1) : DOCKED_FRAME_CAP_HEIGHT;
+    const uint32_t w = hos_live_output_size(0) > DOCKED_FRAME_CAP_WIDTH ? hos_live_output_size(0) : DOCKED_FRAME_CAP_WIDTH;
+    const uint32_t h = hos_live_output_size(1) > DOCKED_FRAME_CAP_HEIGHT ? hos_live_output_size(1) : DOCKED_FRAME_CAP_HEIGHT;
     return (uint64_t)h << 32 | w;
 }
 /* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
@@ -190,17 +192,22 @@ uint64_t hos_frame_cap(uint64_t cap) {
    Keep at least 512 MB by default; larger scaled pools and an explicit HOS_RT_POOL_MB=<MB> still win. An output with more pixels
    than 3840 x 2160 (a size of the player's own, up to 5120 x 2880's pixels: hos_output_parse) keeps its pool to 900 MB:
    5120 x 2880 scales to 1220 MB, and 1220 and 1000 MB both failed the game's own reservation at boot; at 900 MB it boots and
-   plays with the 3D at the full size. */
-uint64_t hos_rt_pool_size(uint64_t game) {
-    const char *e = getenv("HOS_RT_POOL_MB");
-    extern volatile uint64_t hos_wide_out;
-    const uint64_t wide = hos_wide_out, wide_px = (wide >> 32) * (wide & 0xffffffffULL);
-    uint64_t px = (uint64_t)hos_output_size(0) * hos_output_size(1);
+   plays with the 3D at the full size.
+   hos_rt_pool_for: that pool for an output of width x height and a widescreen picture (wide, as hos_wide_out), without the
+   override; hos_rt_pool_size: the start's, which the game reserves once. */
+uint64_t hos_rt_pool_for(uint32_t width, uint32_t height, uint64_t wide, uint64_t game) {
+    const uint64_t wide_px = (wide >> 32) * (wide & 0xffffffffULL);
+    uint64_t px = (uint64_t)width * height;
     if (wide_px > px) px = wide_px;
     const uint64_t scaled = px > 2560 * 1440 ? (game * px / (2560 * 1440) + 0xfffff) & ~0xfffffULL : game;
     const uint64_t minimum = 512ULL << 20, most = 900ULL << 20;
-    const int big = (uint64_t)hos_output_size(0) * hos_output_size(1) > 3840ULL * 2160;
-    const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : big && scaled > most ? most : scaled;
+    const int big = (uint64_t)width * height > 3840ULL * 2160;
+    return scaled < minimum ? minimum : big && scaled > most ? most : scaled;
+}
+uint64_t hos_rt_pool_size(uint64_t game) {
+    const char *e = getenv("HOS_RT_POOL_MB");
+    extern volatile uint64_t hos_wide_out;
+    const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : hos_rt_pool_for(hos_output_size(0), hos_output_size(1), hos_wide_out, game);
     static int logged;
     if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
     return v;
@@ -210,11 +217,12 @@ uint64_t hos_rt_pool_size(uint64_t game) {
    They go through the notifications it polls each frame (TryPopNotificationMessage).
    On 30 and 31 (operation and performance mode changed) it reads its modes again.
    On 300 it reads its graphics scale and its display size, the display-size object's base (+244, nx2/oot_patches.py).
-   That base is written as the game pops that 300.
-   An output the boot's window and 3D setup cannot show waits for the next start: one other than the boot's display size,
-   except one smaller on both sides than the shipped 2560 x 1440 from a start at that size. */
+   That base is written as the game pops that 300, and a larger one grows the game's window (host/oot_window_grow.c).
+   An output waits for the next start when its render targets need more than the pool the game reserved at its start
+   (hos_rt_pool_for), when the game has no display-size object, and under a widescreen picture, whose base is its own. */
 int rx_option(int id, int otherwise);
 void rx_option_set(int id, int value);
+void hos_window_request(uint32_t width, uint32_t height);   /* oot_window_grow.c */
 volatile uint64_t hos_display_object;   /* (nx2/oot_patches.py: f_810a7b70's display-size object) */
 enum { OE_OPERATION_MODE_CHANGED = 30, OE_PERFORMANCE_MODE_CHANGED = 31, OE_GRAPHICS_SCALE_CHANGED = 300 };
 enum { OE_DISPLAY_BASE = 244 };   /* (the display-size object's frame base: width, then height) */
@@ -230,6 +238,9 @@ static volatile int64_t oe_display_size;   /* (the display size the next 300 bri
 static int answered_handheld(void) { return live_handheld >= 0 ? live_handheld : handheld(); }
 static int answered_output(void) { return live_output >= 0 ? live_output : boot_output(); }
 static int answered_scale(void) { return answered_handheld() || answered_output() == 0; }   /* (the scale enum: 1 x0.8, 0 x1) */
+/* The display size the running game has: the boot's until an Output resolution is applied while it runs (the frame's cap and
+   the 3D's largest size follow it, nx2/oot_patches.py) */
+uint32_t hos_live_output_size(int height) { return display_size_of(answered_output(), height); }
 static int oe_pop(uint32_t *message) {
     for (LONG was = oe_pending; was; was = oe_pending) {
         int i = 0;
@@ -240,6 +251,7 @@ static int oe_pop(uint32_t *message) {
                f_806702e0, each frame, so it never reads the two words half written) */
             const int64_t size = oe_messages[i] == OE_GRAPHICS_SCALE_CHANGED ? InterlockedExchange64(&oe_display_size, 0) : 0;
             if (size) {
+                hos_window_request((uint32_t)size, (uint32_t)(size >> 32));
                 *(uint32_t *)GP(hos_display_object + OE_DISPLAY_BASE) = (uint32_t)size;
                 *(uint32_t *)GP(hos_display_object + OE_DISPLAY_BASE + 4) = (uint32_t)(size >> 32);
                 *(uint32_t *)GP(hos_display_object + OE_DISPLAY_FLAGS) |= OE_DISPLAY_REBUILD;
@@ -252,15 +264,14 @@ static int oe_pop(uint32_t *message) {
 static void oe_post(int i) {
     for (LONG was = oe_pending; InterlockedCompareExchange(&oe_pending, was | 1L << i, was) != was; was = oe_pending) {}
 }
-/* Whether the running game takes this Output resolution without a restart */
+/* Whether the running game takes this Output resolution without a restart: its render targets fit the pool the game reserved at
+   its start; a larger window is made at the game's next present (oot_window_grow.c) */
+static const uint64_t RT_POOL_SHIPPED = 0x13100000ULL;   /* (the game's own render target pool, nx2/oot_patches.py) */
 static int takes_output(int output) {
     extern volatile uint64_t hos_wide_out;
     const uint32_t w = display_size_of(output, 0), h = display_size_of(output, 1);
     if (w == hos_output_size(0) && h == hos_output_size(1)) return 1;
-    /* (a smaller one from the shipped 2560 x 1440, whose 3D setup it keeps; a smaller one from a larger start keeps that start's
-       3D setup, untried; a widescreen picture's base is its own, host/hos_main.c) */
-    return w < hos_output_size(0) && h < hos_output_size(1) && hos_output_size(0) == display_size_of(0, 0) &&
-           hos_output_size(1) == display_size_of(0, 1) && hos_display_object && !hos_wide_out;
+    return hos_display_object && !hos_wide_out && hos_rt_pool_for(w, h, 0, RT_POOL_SHIPPED) <= hos_rt_pool_size(RT_POOL_SHIPPED);
 }
 /* The menu's Output resolution, by hos_output_parse's rules */
 static int menu_output_of(int value) {

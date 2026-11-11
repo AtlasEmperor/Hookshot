@@ -545,7 +545,8 @@ def apply(gen, *, protect_hearts=False, required=False):
 #   2560 x 1440) is the frame's base (B+244; the frame is the base times the graphics scale's factor, f_806702e0, capped by the
 #   scale's display class: docked 3840 x 2160 at scale 0). Its first entry asks the host when it differs. The host keeps B
 #   (hos_display_object) to change the base while the game runs: the game makes its frame from it again on message 300.
-OUT_DECL = "uint32_t hos_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\nuint64_t hos_frame_cap(uint64_t cap);\n"
+OUT_DECL = ("uint32_t hos_output_size(int height);\nuint32_t hos_live_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\n"
+            "uint64_t hos_frame_cap(uint64_t cap);\nvoid hos_window_present(uint64_t d);\n")
 OUT_EDITS = [
     # (the picture's 2560 x 1440 at 0x81202ee4, not f_831f3200's copy at +0xb68; nx2/oot_wide.py's widescreen size, after it,
     # stays over it: host/hos_main.c makes that one at this height)
@@ -562,17 +563,18 @@ OUT_EDITS = [
      "    if ((hos_output_size(0) != 2560 || hos_output_size(1) != 1440) && recomp_load32(c, c->x[20] + 8) == 2560) { recomp_store32(c, c->x[20] + 8, hos_output_size(0)); recomp_store32(c, c->x[20] + 12, hos_output_size(1)); }\n"
      "    { extern volatile uint64_t hos_display_object; hos_display_object = c->x[0]; }\n"),
     # - f_80ea2f30: the 3D's largest size, ResolutionParam's BaseResolution (or 1920 x 1080 as constants), 3/4 of 2560 x 1440;
-    #   above it the game takes a smaller upscale network (1/3: 1280 x 720 at 4K). Scaled with the output.
+    #   above it the game takes a smaller upscale network (1/3: 1280 x 720 at 4K). Scaled with the running output
+    #   (hos_live_output_size: the start's until the Output resolution changes while the game runs).
     ("c->x[30] = 0x80ea2ffcULL; f_831cca50(c);\n"
      "    { uint64_t _b=c->x[0]; int64_t _o=0; { uint64_t _p0,_p1; recomp_ldp32(c,(_b+_o),&_p0,&_p1); c->x[24]=_p0; c->x[25]=_p1; } }\n",
      "c->x[30] = 0x80ea2ffcULL; f_831cca50(c);\n"
      "    { uint64_t _b=c->x[0]; int64_t _o=0; { uint64_t _p0,_p1; recomp_ldp32(c,(_b+_o),&_p0,&_p1); c->x[24]=_p0; c->x[25]=_p1; } }\n"
-     "    if (hos_output_size(0) != 2560 || hos_output_size(1) != 1440) { c->x[24] = (uint32_t)c->x[24] * hos_output_size(0) / 2560; c->x[25] = (uint32_t)c->x[25] * hos_output_size(1) / 1440; }\n"),
+     "    if (hos_live_output_size(0) != 2560 || hos_live_output_size(1) != 1440) { c->x[24] = (uint32_t)c->x[24] * hos_live_output_size(0) / 2560; c->x[25] = (uint32_t)c->x[25] * hos_live_output_size(1) / 1440; }\n"),
     ("    c->x[8] = 0x44f00000ULL;\n    c->x[8] &= 0xFFFFFFFFULL;\n    recomp_store32(c,c->x[19] + 3668,c->x[8]);\n"
      "    c->x[8] = 0x44870000ULL;\n    c->x[8] &= 0xFFFFFFFFULL;\n",
-     "    c->x[8] = hos_output_size(0) * 3 / 4;\n    { float _f = (float)c->x[8]; uint32_t _u; memcpy(&_u, &_f, 4); c->x[8] = _u; }\n"
+     "    c->x[8] = hos_live_output_size(0) * 3 / 4;\n    { float _f = (float)c->x[8]; uint32_t _u; memcpy(&_u, &_f, 4); c->x[8] = _u; }\n"
      "    recomp_store32(c,c->x[19] + 3668,c->x[8]);\n"
-     "    c->x[8] = hos_output_size(1) * 3 / 4;\n    { float _f = (float)c->x[8]; uint32_t _u; memcpy(&_u, &_f, 4); c->x[8] = _u; }\n"),
+     "    c->x[8] = hos_live_output_size(1) * 3 / 4;\n    { float _f = (float)c->x[8]; uint32_t _u; memcpy(&_u, &_f, 4); c->x[8] = _u; }\n"),
     # - The render targets' GPU pool: 0x13100000 bytes (the graphics config's +1464, read in f_836ce9d0, which takes its storage from
     #   the "Graphics" heap and makes a physical pool and a virtual one over it: f_80c4a1c0 -> f_80c49070 -> f_80c49380 -> f_811c9ba0).
     #   Sized for 2560 x 1440: a 3840x2160 3D at the 4K output ran out of it and the next target came back null (crash in f_8005ed00,
@@ -601,6 +603,11 @@ OUT_EDITS = [
     ("    c->x[8] = recomp_load64(c,(c->x[9] + ((c->x[8]) << 3)));\n    recomp_store64(c,c->x[1] + 0,c->x[8]);\nL_8114c60c:;\n",
      "    c->x[8] = recomp_load64(c,(c->x[9] + ((c->x[8]) << 3)));\n    c->x[8] = hos_frame_cap(c->x[8]);\n"
      "    recomp_store64(c,c->x[1] + 0,c->x[8]);\nL_8114c60c:;\n"),
+    # - f_80547f20, the game's present method (D, the display-size object, in x19): after its QueuePresentTexture (0x80547f78)
+    #   and before it reads D+0xc8 (0x80547f94), on the presenting thread, the host grows the window a larger display size
+    #   needs (host/oot_window_grow.c): the method then makes its window again at D+8 x D+0xc.
+    ("{ uint64_t _t = c->x[8]; c->x[30] = 0x80547f7cULL; A64_ICALL(c, _t); }\n",
+     "{ uint64_t _t = c->x[8]; c->x[30] = 0x80547f7cULL; A64_ICALL(c, _t); }\n    hos_window_present(c->x[19]);\n"),
 ]
 
 

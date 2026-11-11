@@ -326,7 +326,7 @@ class OutputSizeOrderTests(unittest.TestCase):
             self.assertIn("{ uint64_t _b=c->x[21]; int64_t _o=20; recomp_store64_sp(c,(_b+_o),c->x[8]); }", f0)
             self.assertIn(mark(21, 20, 12), f0)
             self.assertIn("    recomp_store64(c,c->x[21] + 4,c->x[1]);", f0)   # (the host call between: its own marks)
-            self.assertEqual(st["groups"], 6)   # (x21 [20, 32) and the five pairs of code_001.c)
+            self.assertEqual(st["groups"], 7)   # (x21 [20, 32) and the six pairs of code_001.c)
 
     def test_patches_made_before_are_found_once(self):
         with tempfile.TemporaryDirectory() as d:
@@ -398,7 +398,7 @@ class OutputSizeOrderTests(unittest.TestCase):
                     text = ungroup("".join(read(n) for n in names))
                     for _, new in oot_patches.OUT_EDITS:
                         self.assertEqual(text.count(new), 1, (build, new))
-                    self.assertEqual(st["groups"], 6, build)
+                    self.assertEqual(st["groups"], 7, build)
 
     def test_groups_before_the_patches_fail_the_lift(self):
         """the order before this change (sabotage control): the groups break OUT_EDITS[0], [3] and [8], and the supported build's
@@ -415,7 +415,7 @@ class OutputSizeOrderTests(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 oot_patches.apply_output_size(d, required=False)
-            self.assertIn("WARNING: the output size places were found [0, 1, 1, 0, 1, 1, 1, 1, 0] times", out.getvalue())
+            self.assertIn("WARNING: the output size places were found [0, 1, 1, 0, 1, 1, 1, 1, 0, 1] times", out.getvalue())
 
     def test_a_missing_place_fails_once_required(self):
         """the supported build's whole lift stops on a missing place; another build's, or part of a lift, warns as before"""
@@ -434,7 +434,7 @@ class OutputSizeOrderTests(unittest.TestCase):
                         self.assertIn("OUT_EDITS [4]", str(e.exception))
                     else:
                         chunks.edit_c(d, Counter(), supported, whole)
-                        self.assertIn("WARNING: the output size places were found [1, 1, 1, 1, 0, 1, 1, 1, 1] times", out.getvalue())
+                        self.assertIn("WARNING: the output size places were found [1, 1, 1, 1, 0, 1, 1, 1, 1, 1] times", out.getvalue())
 
     @unittest.skipUnless(os.path.isfile(os.path.join(os.environ.get("EMSDK", r"C:\emsdk"), "upstream", "bin", "clang.exe"))
                          or os.name != "nt" and shutil.which("clang"), "no clang")
