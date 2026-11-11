@@ -172,6 +172,16 @@ static uint32_t display_size_of(int output, int height) {   /* (its display size
     return height ? (uint32_t)output & HOS_OUTPUT_HEIGHT_MASK : (uint32_t)output >> HOS_OUTPUT_WIDTH_SHIFT;
 }
 uint32_t hos_output_size(int height) { return display_size_of(boot_output(), height); }
+/* (hookshot) The frame's cap, width | height << 32 (nx2/oot_patches.py: f_8114c5e0, the game's table by class and scale).
+   Docked at scale x1 the game caps at 3840 x 2160, under the larger outputs.
+   Only a frame the game makes again takes the cap (a Handheld switch back to docked): raised to the output, it keeps its size. */
+static const uint32_t DOCKED_FRAME_CAP_WIDTH = 3840, DOCKED_FRAME_CAP_HEIGHT = 2160;
+uint64_t hos_frame_cap(uint64_t cap) {
+    if (cap != ((uint64_t)DOCKED_FRAME_CAP_HEIGHT << 32 | DOCKED_FRAME_CAP_WIDTH)) return cap;
+    const uint32_t w = hos_output_size(0) > DOCKED_FRAME_CAP_WIDTH ? hos_output_size(0) : DOCKED_FRAME_CAP_WIDTH;
+    const uint32_t h = hos_output_size(1) > DOCKED_FRAME_CAP_HEIGHT ? hos_output_size(1) : DOCKED_FRAME_CAP_HEIGHT;
+    return (uint64_t)h << 32 | w;
+}
 /* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool

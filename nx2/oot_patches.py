@@ -545,7 +545,7 @@ def apply(gen, *, protect_hearts=False, required=False):
 #   2560 x 1440) is the frame's base (B+244; the frame is the base times the graphics scale's factor, f_806702e0, capped by the
 #   scale's display class: docked 3840 x 2160 at scale 0). Its first entry asks the host when it differs. The host keeps B
 #   (hos_display_object) to change the base while the game runs: the game makes its frame from it again on message 300.
-OUT_DECL = "uint32_t hos_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\n"
+OUT_DECL = "uint32_t hos_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\nuint64_t hos_frame_cap(uint64_t cap);\n"
 OUT_EDITS = [
     # (the picture's 2560 x 1440 at 0x81202ee4, not f_831f3200's copy at +0xb68; nx2/oot_wide.py's widescreen size, after it,
     # stays over it: host/hos_main.c makes that one at this height)
@@ -597,6 +597,10 @@ OUT_EDITS = [
     ("c->x[30] = 0x80b723acULL; f_809df700(c);\n",
      "if (c->x[0] > hos_rt_pool_size(0x13100000ULL) - 0x13100000ULL) c->x[0] -= hos_rt_pool_size(0x13100000ULL) - 0x13100000ULL;\n"
      "c->x[30] = 0x80b723acULL; f_809df700(c);\n"),
+    # - f_8114c5e0: the frame's cap by display class and graphics scale, 3840 x 2160 docked at x1 (host/nn_applet.c hos_frame_cap).
+    ("    c->x[8] = recomp_load64(c,(c->x[9] + ((c->x[8]) << 3)));\n    recomp_store64(c,c->x[1] + 0,c->x[8]);\nL_8114c60c:;\n",
+     "    c->x[8] = recomp_load64(c,(c->x[9] + ((c->x[8]) << 3)));\n    c->x[8] = hos_frame_cap(c->x[8]);\n"
+     "    recomp_store64(c,c->x[1] + 0,c->x[8]);\nL_8114c60c:;\n"),
 ]
 
 
