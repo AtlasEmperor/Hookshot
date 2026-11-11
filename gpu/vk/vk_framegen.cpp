@@ -900,10 +900,12 @@ void release() {
     drop_pipe(scale.pipe);
     scale.init = scale.failed = false;
     scale.cropped_w = scale.cropped_h = scale.scaled_w = scale.scaled_h = scale.small_w = scale.small_h = 0;
-    drop_img(hdr.out);
-    drop_pipe(hdr.pipe);
-    hdr.init = hdr.failed = false;
-    hdr.w = hdr.h = 0;
+    for (ConversionPass* conversion : {&hdr, &pq_sdr}) {
+        drop_img(conversion->out);
+        drop_pipe(conversion->pipe);
+        conversion->init = conversion->failed = false;
+        conversion->w = conversion->h = 0;
+    }
 }
 const DeviceLife life(kDeviceOrderPresent, "frame generation and upscaling", release, nullptr, nullptr);
 } // namespace

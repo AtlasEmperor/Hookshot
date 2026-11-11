@@ -134,7 +134,7 @@ JUDGED = [
     ("vk_memory.cpp", "tl_pools"), ("vk_memory.cpp", "bind_memo"), ("vk_memory.cpp", "dmabuf_fence"),
     ("vk_memory.cpp", "budget"), ("vk_memory.cpp", "keep_latch"), ("vk_memory.cpp", "guest_pages_buffer"),
     ("vk_shader.cpp", "p"), ("vk_shader.cpp", "picks"), ("vk_shader.cpp", "prog_fast"),
-    ("vk_vma.cpp", "image_pool"), ("vk_vma.cpp", "vma"), ("vk_framegen.cpp", "hdr"),
+    ("vk_vma.cpp", "image_pool"), ("vk_vma.cpp", "vma"), ("vk_framegen.cpp", "hdr"), ("vk_framegen.cpp", "pq_sdr"),
 ]
 # (and those a type cannot tell: a fact of the device kept as a plain number or flag, each named in its file's release)
 JUDGED_PLAIN = [
