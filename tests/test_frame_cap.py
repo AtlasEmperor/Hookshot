@@ -85,6 +85,10 @@ static uint64_t recomp_load8(Ctx *c, uint64_t a) { (void)c; return *at(a); }
 static uint64_t recomp_load32(Ctx *c, uint64_t a) { uint32_t v; (void)c; memcpy(&v, at(a), 4); return v; }
 static uint64_t recomp_load64(Ctx *c, uint64_t a) { uint64_t v; (void)c; memcpy(&v, at(a), 8); return v; }
 static void recomp_store64(Ctx *c, uint64_t a, uint64_t v) { (void)c; memcpy(at(a), &v, 8); }
+/* (the display size the running game has, nn_applet.c's: the start's unless a check sets another) */
+static uint32_t live_w, live_h;
+uint32_t hos_output_size(int height);
+uint32_t hos_live_output_size(int height) { return live_w ? (height ? live_h : live_w) : hos_output_size(height); }
 @HOST@
 @LIFTED@
 static uint64_t cap(int display_class, int scale) {   /* (the cap f_806702e0 takes for that class and graphics scale) */
@@ -108,6 +112,12 @@ int main(void) {
     CHECK(docked == (w > 3840 || h > 2160 ? size(w > 3840 ? w : 3840, h > 2160 ? h : 2160) : size(3840, 2160)));
     CHECK(cap(0, 1) == size(2560, 1440) && cap(0, 2) == size(1920, 1080));   /* (docked at x0.8 and x0.667: the game's) */
     CHECK(cap(1, 0) == size(1920, 1080) && cap(1, 1) == size(1920, 1080));   /* (handheld: the game's) */
+    /* (an Output resolution changed while the game runs: the cap follows the running output, larger or smaller) */
+    live_w = 5120, live_h = 2880;
+    CHECK(cap(0, 0) == size(5120, 2880) && cap(0, 1) == size(2560, 1440));
+    live_w = 1920, live_h = 1080;
+    CHECK(cap(0, 0) == size(3840, 2160));
+    live_w = live_h = 0;
     printf("PASS: output %ux%u, docked cap %llux%llu\n", w, h, (unsigned long long)(docked & 0xffffffffu),
            (unsigned long long)(docked >> 32));
     return 0;
@@ -140,6 +150,9 @@ def main():
         lifted = (gen / "code_000.c").read_text(encoding="utf-8")
         check(lifted.count("hos_frame_cap(c->x[8])") == 1, "the cap is not passed through the host once")
         check(oot_patches.OUT_DECL in lifted, "the lifted file does not declare the host's functions")
+        largest = [new for old, new in oot_patches.OUT_EDITS if "f_831cca50" in old or "3668" in old]
+        check(len(largest) == 2 and all("hos_live_output_size(" in new and "hos_output_size(" not in new for new in largest),
+              "the 3D's largest size does not follow the running output")
         source, exe = work / "fixture.c", work / "fixture.exe"
         source.write_text(FIXTURE.replace("@HOST@", packing + chr(10) + host[start:end]).replace("@LIFTED@", lifted.replace('#include "a64.h"\n', "")),
                           encoding="utf-8")
@@ -151,7 +164,8 @@ def main():
             run = subprocess.run([str(exe)], cwd=work, env=env, capture_output=True, text=True)
             check(run.returncode == 0, f"output_res={mode} ({w}x{h}): {run.stderr.strip()}")
             check(f"output {w}x{h}," in run.stdout, f"output_res={mode} is not {w}x{h}: {run.stdout.strip()}")
-    print("PASS: the docked frame's cap holds every output, 5120 x 1440 and 5120 x 2880 included; the other caps are the game's")
+    print("PASS: the docked frame's cap holds every output, 5120 x 1440 and 5120 x 2880 included, and the running one; the other "
+          "caps are the game's; the 3D's largest size follows the running output")
 
 
 if __name__ == "__main__":

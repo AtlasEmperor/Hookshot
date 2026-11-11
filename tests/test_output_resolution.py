@@ -36,6 +36,8 @@ constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
 volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
+uint32_t hos_output_size(int height);
+uint32_t hos_live_output_size(int height) { return hos_output_size(height); }   // (nn_applet.c's, at the start: the start's)
 struct { int handheld, output_res, ultrawide; } opts;
 #include "host/hos_wide_size.h"
 // (the main screen tx_output_res shapes its sizes for: none unless a check sets one)

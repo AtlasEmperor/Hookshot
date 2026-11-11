@@ -3,7 +3,10 @@
 The menu's values reach the game through the notifications it polls each frame, once each and only on a change.
 30 and 31 bring the operation and performance modes, 300 the graphics scale and the display size.
 HOS_HANDHELD and HOS_OUTPUT_RES win over the menu.
-An output the boot's window cannot show is left for the next start; the menu is told the size the running game has.
+An output applies when its render targets fit the pool the game reserved at its start, larger or smaller than the start's.
+A larger one asks for the game's window to grow, at the game's pop of its 300 (host/oot_window_grow.c).
+An output that needs more pool is left for the next start; the menu is told the size the running game has.
+hos_live_output_size is that running size: the start's until an output applies, then the output's.
 
 python -I -B tests/test_display_live.py [--cxx g++]
 """
@@ -61,6 +64,8 @@ static void hos_log(const char *, ...) {}
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 volatile uint64_t hos_wide_out = 0;
 static int menu_up, menu_output, menu_handheld, told_id = -1, told_value = -1, told_count;
+static uint64_t window_asked;   // (the last size asked of host/oot_window_grow.c: width | height << 32)
+void hos_window_request(uint32_t width, uint32_t height) { window_asked = (uint64_t)height << 32 | width; }
 ''' + ids + r'''
 int rx_option(int id, int otherwise) {
     if (!menu_up) return otherwise;
@@ -95,6 +100,7 @@ static uint32_t& flags() { return *(uint32_t *)GP(0x100 + 8); }   // (the displa
 static void tick(int output, int handheld) { menu_up = 1, menu_output = output, menu_handheld = handheld; hos_applet_presented(); }
 static int size(int w, int h) { return w << HOS_OUTPUT_WIDTH_SHIFT | h; }   // (the menu's form: vk_api.h HOS_OPT_OUTPUT_RES)
 static const int GAME = size(2048, 1152);   // (the game's own)
+static bool running(uint32_t w, uint32_t h) { return hos_live_output_size(0) == w && hos_live_output_size(1) == h; }
 
 int main(int argc, char **argv) {
     if (argc != 2) return 2;
@@ -105,6 +111,7 @@ int main(int argc, char **argv) {
         hos_applet_presented();   // (no renderer yet)
         check(told_count == 0 && popped({}), "nothing is sent before the renderer answers");
         check(ask_mode() == 1 && ask_performance() == 1 && ask_scale() == 1, "the boot's docked answers, scale x0.8");
+        check(running(2560, 1440), "the game runs at the boot's display size, 2560x1440 for its own output");
         tick(GAME, 0);
         check(popped({}), "the menu's values as booted send nothing");
         check(told_id == HOS_OPT_OUTPUT_RUNNING && told_value == GAME, "the menu is told the game runs at its own size");
@@ -125,27 +132,51 @@ int main(int argc, char **argv) {
         flags() = 0;   // (the game's frame maker clears it)
         tick(size(2304, 1296), 0);
         check(popped({300}) && base(0) == 2304 && base(1) == 1296, "a size of the player's own, smaller, applies at once");
+        check(window_asked == ((uint64_t)1296 << 32 | 2304), "the window is asked for the size the game pops");
+        check(running(2304, 1296), "the running size is the output applied");
         tick(size(3840, 2160), 0);
-        check(popped({}) && base(0) == 2304 && told_value == size(2304, 1296), "3840x2160 waits for a restart");
+        check(popped({}) && base(0) == 2304 && told_value == size(2304, 1296), "3840x2160 needs more pool than the start's: it waits");
+        check(running(2304, 1296), "an output that waits leaves the running size");
+        tick(size(3440, 1440), 0);
+        check(window_asked == ((uint64_t)1296 << 32 | 2304), "nothing asked of the window before the game's pop");
+        check(popped({300}) && base(0) == 3440 && base(1) == 1440 && told_value == size(3440, 1440),
+              "3440x1440, larger than the start but within its pool, applies");
+        check(window_asked == ((uint64_t)1440 << 32 | 3440), "the window is asked to grow to 3440x1440");
         tick(GAME, 1);
         check(popped({30, 31, 300}) && base(0) == 2560 && base(1) == 1440, "the display size comes back with the game's pop of 300");
         tick(GAME, 0);
         check(popped({30, 31}) && ask_scale() == 1 && base(0) == 2560 && base(1) == 1440, "back to the game's 2048x1152");
-        check(told_value == GAME && told_count == 5, "the running size is told on each change only");
+        check(told_value == GAME && told_count == 6, "the running size is told on each change only");
+        check(running(2560, 1440), "back to the game's own: its 2560x1440 display size runs");
     } else if (mode == "pinned") {
         tick(size(2560, 1440), 1);
         check(popped({}) && ask_mode() == 1 && ask_scale() == 1, "HOS_HANDHELD and HOS_OUTPUT_RES win over the menu");
     } else if (mode == "start1080") {
         tick(size(2560, 1440), 0);
-        check(told_value == size(1920, 1080) && popped({}) && base(0) == 2560, "from a 1920x1080 start only 1920x1080 applies");
+        check(told_value == size(2560, 1440) && popped({300}) && base(0) == 2560 && base(1) == 1440,
+              "from a 1920x1080 start 2560x1440 applies: its pool is the start's 512 MB");
+        check(window_asked == ((uint64_t)1440 << 32 | 2560), "the window is asked to grow to 2560x1440");
+        tick(size(3840, 2160), 0);
+        check(told_value == size(2560, 1440) && popped({}), "3840x2160 needs 687 MB: it waits");
+        tick(size(1920, 1080), 0);
+        check(popped({300}) && base(0) == 1920 && base(1) == 1080, "back to 1920x1080");
         tick(size(1920, 1080), 1);
         check(popped({30, 31, 300}) && ask_mode() == 0 && ask_scale() == 1, "Handheld still applies at once");
     } else if (mode == "start4k") {
+        check(running(3840, 2160), "a 3840x2160 start runs at 3840x2160");
         tick(GAME, 0);
-        check(told_value == size(3840, 2160) && popped({}) && ask_scale() == 0, "from a 3840x2160 start only 3840x2160 applies");
+        check(told_value == GAME && popped({300}) && ask_scale() == 1 && base(0) == 2560 && base(1) == 1440,
+              "from a 3840x2160 start the game's own size applies, smaller, at scale x0.8");
+        tick(size(1920, 1080), 0);
+        check(popped({300}) && ask_scale() == 0 && base(0) == 1920 && base(1) == 1080, "and 1920x1080");
+        tick(size(5120, 2880), 0);
+        check(told_value == size(1920, 1080) && popped({}), "5120x2880 needs 900 MB of a 687 MB pool: it waits");
+        check(running(1920, 1080), "1920x1080 still runs");
     } else if (mode == "start5k") {
         tick(GAME, 0);
-        check(told_value == size(5120, 1440) && popped({}) && ask_scale() == 0, "from a 5120x1440 start only 5120x1440 applies");
+        check(told_value == GAME && popped({300}) && ask_scale() == 1, "from a 5120x1440 start the game's own size applies");
+        tick(size(3840, 2160), 0);
+        check(told_value == GAME && popped({}), "3840x2160 needs 687 MB of a 610 MB pool: it waits");
     } else if (mode == "wide") {
         hos_wide_out = (uint64_t)1440 << 32 | 3440;   // (host/hos_main.c: a 3440x1440 picture)
         tick(size(1920, 1080), 0);
@@ -179,7 +210,9 @@ int main(int argc, char **argv) {
             (tmp / "hookshot_options.ini").write_text(ini, encoding="ascii")
             env = {k: v for k, v in os.environ.items() if k not in ("HOS_HANDHELD", "HOS_OUTPUT_RES", "HOS_RT_POOL_MB")}
             subprocess.run([str(exe), name], cwd=tmp, env=env | extra, check=True)
-    print("PASS: Profile and Output resolution reach the game by notifications once per change; overrides win; the rest waits")
+    print("PASS: Profile and Output resolution reach the game by notifications once per change; overrides win; an output within the "
+          "start's pool applies, the window asked to grow at the game's pop; the rest waits; the running size follows "
+          "what applies")
 
 
 if __name__ == "__main__":

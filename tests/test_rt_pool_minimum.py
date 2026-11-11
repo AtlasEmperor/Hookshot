@@ -23,7 +23,10 @@ def main():
     spec = importlib.util.spec_from_file_location("null_pool", ROOT / "tests/test_nvn_null_pool.py")
     helpers = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helpers)
-    body = helpers.block(args.source.read_text(), "uint64_t hos_rt_pool_size(uint64_t game)")
+    source = args.source.read_text()
+    body = "\n".join(helpers.block(source, signature) for signature in (
+        "uint64_t hos_rt_pool_for(uint32_t width, uint32_t height, uint64_t wide, uint64_t game)",
+        "uint64_t hos_rt_pool_size(uint64_t game)"))
     fixture = r'''#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
