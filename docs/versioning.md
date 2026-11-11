@@ -222,9 +222,11 @@ and git describe's `v2.1.0-rc.1-3-g1a2b3c4` the nightly (named with `--long`, so
 
 Choosing another track installs that track's newest build, an older version too (the builder asks first). The game's
 own update check (`host/hos_update.c`) follows the track of the folder's version. The same rules are in
-`builder/HookshotBuilder/Updater.cs`, `builder/linux/linux_update.py` and `tests/test_update_tracks.py`. A release
-candidate's and the nightly's `HookshotBuilder.exe` are built with `HOOKSHOT_SETUP_RELEASE`, so started with no `--tag`
-they install their own release (`builder/setup/setup.c`).
+`builder/HookshotBuilder/Updater.cs`, `builder/linux/linux_update.py` and `host/hos_update.c`. The cases in
+`tests/update_cases.json` hold the copies together: `tests/test_update_tracks.py` runs them on the Linux updater and the
+game's C, `tests/test_updater_cases.py` on the Windows builder. A release candidate's and the nightly's
+`HookshotBuilder.exe` are built with `HOOKSHOT_SETUP_RELEASE`, so started with no `--tag` they install their own release
+(`builder/setup/setup.c`).
 
 ## The files of a release
 

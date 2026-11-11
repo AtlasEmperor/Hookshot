@@ -1,6 +1,8 @@
 """The update tracks (release, release candidate, nightly): which track a version is on and the version order, the same in
 the game's update check (host/hos_update.c, compiled here from its own text), the setup (builder/setup/setup.c) and the
-Linux updater (builder/linux/linux_update.py). Updater.cs has the same rules and is checked by the Windows CI build."""
+Linux updater (builder/linux/linux_update.py). Updater.cs has the same rules; tests/test_updater_cases.py runs it on these cases.
+The cases of the three copies are in tests/update_cases.json: each says which copies it holds for."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -15,6 +17,10 @@ sys.path.insert(0, str(ROOT / "builder" / "linux"))
 import linux_update  # noqa: E402
 
 CC = "gcc"
+CASES = json.loads((ROOT / "tests" / "update_cases.json").read_text(encoding="utf-8"))["cases"]
+# (what each kind of case runs on: the game's C holds the track as the nightly flag, and the order of releases and release candidates)
+DEFAULT_COPIES = {"track": ("python", "csharp", "c"), "newer": ("python", "csharp", "c"), "target": ("python", "csharp"),
+                  "builds_here": ("csharp",)}
 
 # (version, track)
 TRACKS = [
@@ -54,6 +60,17 @@ int main(int argc, char **argv) {
 """
 
 
+def python_result(kind, args):
+    """A case's answer from builder/linux/linux_update.py"""
+    if kind == "track":
+        return linux_update.track_of(args[0])
+    if kind == "newer":
+        newer, older = (linux_update.release_key(version) for version in args)
+        return newer is not None and older is not None and newer > older
+    latest, tools, track = args
+    return linux_update.update_target(latest, tools, switch=track != linux_update.track_of(tools))
+
+
 def portable(source):
     start = source.index("#if defined(_WIN32) || defined(__linux__)")
     end = source.index("#endif", source.index("static int newest_tag("))
@@ -85,6 +102,23 @@ class Tracks(unittest.TestCase):
 
     def c(self, *args):
         return subprocess.run([self.exe, *args], capture_output=True, text=True, check=True).stdout.split()
+
+    def test_the_cases_every_copy_holds(self):
+        kinds = {"python": set(), "c": set()}
+        for case in CASES:
+            kind, args, expect = case["kind"], case["args"], case["expect"]
+            copies = case.get("copies", DEFAULT_COPIES[kind])
+            if "python" in copies:
+                self.assertEqual(python_result(kind, args), expect, case)
+                kinds["python"].add(kind)
+            if "c" in copies:
+                if kind == "track":
+                    nightly = "1" if expect == "nightly" else "0"
+                    self.assertEqual(self.c("n", args[0]), [nightly, nightly], case)
+                else:
+                    self.assertEqual(self.c("o", *args), ["1" if expect else "0"], case)
+                kinds["c"].add(kind)
+        self.assertEqual(kinds, {"python": {"track", "newer", "target"}, "c": {"track", "newer"}})
 
     def test_the_track_of_a_version(self):
         for version, track in TRACKS + [("nightly", "release"), ("rc", "release"), ("dev", "release")]:
