@@ -151,7 +151,7 @@ public partial class MainWindow : Window
         var builder = Tools.Find()?.Version;
         // (the newest release known: GitHub's, else this builder's own. v2.0.0 took a GitHub that did not answer for "up to date")
         updateTarget = Updater.Target(latestTag, builder, Track);
-        if (game != null && updateTarget != null && game != updateTarget && !sourcePicked) mode = Mode.UpdateGame;
+        if (Updater.GameNeedsUpdate(game, updateTarget, Switching) && !sourcePicked) mode = Mode.UpdateGame;
         else if (game != null && !sourcePicked) mode = Mode.UpToDate;
         else if (latestTag != null && builder != null && builder != updateTarget) mode = Mode.UpdateBuilder;
         else mode = Mode.Build;
@@ -207,14 +207,14 @@ public partial class MainWindow : Window
         latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
         updateTarget = Updater.Target(latestTag, Tools.Find()?.Version, Track);   // (GitHub's newest, else this builder's own)
         if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (GitHub did not answer)";
-        else if (game != null && game != updateTarget && GameVersion(folder) != null)
+        else if (Updater.GameNeedsUpdate(game, updateTarget, Switching) && GameVersion(folder) != null)
         {
             LaunchStatus.Text = $"Update available: {updateTarget}";
             LaunchStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xB9, 0xC8, 0xFF));
             LaunchStatus.FontWeight = FontWeights.SemiBold;
             LaunchUpdate.Visibility = Visibility.Visible;
         }
-        else if (game != null && game != updateTarget)
+        else if (Updater.GameNeedsUpdate(game, updateTarget, Switching))
             LaunchStatus.Text = $"{updateTarget} is out: build this folder again with the Hookshot Builder to get it";
         else LaunchStatus.Text = latestTag == null ? "Up to date with this builder (GitHub did not answer)" : "Up to date";
     }

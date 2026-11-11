@@ -20,7 +20,7 @@ CC = "gcc"
 CASES = json.loads((ROOT / "tests" / "update_cases.json").read_text(encoding="utf-8"))["cases"]
 # (what each kind of case runs on: the game's C holds the track as the nightly flag, and the order of releases and release candidates)
 DEFAULT_COPIES = {"track": ("python", "csharp", "c"), "newer": ("python", "csharp", "c"), "target": ("python", "csharp"),
-                  "builds_here": ("csharp",)}
+                  "builds_here": ("csharp",), "game_needs_update": ("python", "csharp"), "offer": ("c",)}
 
 # (version, track)
 TRACKS = [
@@ -47,6 +47,7 @@ FIXTURE = r"""
 int main(int argc, char **argv) {
     if (argc == 3 && argv[1][0] == 'n') return printf("%d %d\n", nightly_version(argv[2]), nightly_tag(argv[2])), 0;
     if (argc == 4 && argv[1][0] == 'o') return printf("%d\n", newer_version(argv[2], argv[3])), 0;
+    if (argc == 4 && argv[1][0] == 'p') return printf("%d\n", offer_wanted(argv[2], argv[3])), 0;
     if (argc == 3 && argv[1][0] == 'l') {
         char tag[128] = "";
         FILE *f = fopen(argv[2], "rb");
@@ -67,6 +68,8 @@ def python_result(kind, args):
     if kind == "newer":
         newer, older = (linux_update.release_key(version) for version in args)
         return newer is not None and older is not None and newer > older
+    if kind == "game_needs_update":
+        return linux_update.game_needs_update(*args)
     latest, tools, track = args
     return linux_update.update_target(latest, tools, switch=track != linux_update.track_of(tools))
 
@@ -116,9 +119,10 @@ class Tracks(unittest.TestCase):
                     nightly = "1" if expect == "nightly" else "0"
                     self.assertEqual(self.c("n", args[0]), [nightly, nightly], case)
                 else:
-                    self.assertEqual(self.c("o", *args), ["1" if expect else "0"], case)
+                    command = "p" if kind == "offer" else "o"
+                    self.assertEqual(self.c(command, *args), ["1" if expect else "0"], case)
                 kinds["c"].add(kind)
-        self.assertEqual(kinds, {"python": {"track", "newer", "target"}, "c": {"track", "newer"}})
+        self.assertEqual(kinds, {"python": {"track", "newer", "target", "game_needs_update"}, "c": {"track", "newer", "offer"}})
 
     def test_the_track_of_a_version(self):
         for version, track in TRACKS + [("nightly", "release"), ("rc", "release"), ("dev", "release")]:
@@ -185,9 +189,18 @@ class Tracks(unittest.TestCase):
         self.assertEqual(linux_update.choose_mode(None, "v2.1.0-rc.1", "v2.0.14", False, False, True), "update-builder")
         self.assertEqual(linux_update.choose_mode("v2.1.0-rc.1", "v2.1.0-rc.1", "v2.1.0-rc.2", False, True), "update-game")
 
-    def test_the_game_offers_a_release_candidate_only_a_newer_one(self):
+    def test_the_builders_offer_an_update_only_through_the_game_rule(self):
+        window = (ROOT / "builder/HookshotBuilder/MainWindow.xaml.cs").read_text(encoding="utf-8")
+        linux = (ROOT / "builder/linux/hookshot_builder.py").read_text(encoding="utf-8")
+        # (the window and the launcher page offer the update by the same rule)
+        self.assertEqual(window.count("Updater.GameNeedsUpdate(game, updateTarget, Switching)"), 3)
+        self.assertNotIn("game != updateTarget", window)
+        self.assertIn("offered = linux_update.game_needs_update(game, target, self.switching())", linux)
+        self.assertNotIn("game != target", linux)
+
+    def test_the_game_offers_a_release_or_a_candidate_only_a_newer_one(self):
         source = (ROOT / "host/hos_update.c").read_text(encoding="utf-8")
-        guard = "if (strchr(have, '-') && !nightly_version(have) && !newer_version(tag, have)) return;"
+        guard = "if (!offer_wanted(have, tag)) return;"
         self.assertEqual(source.count(guard), 2)   # (Windows and Linux)
         self.assertEqual(source.count("if (!latest_tag(have, tag, sizeof tag)) {"), 2)
 

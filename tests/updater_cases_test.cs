@@ -15,6 +15,7 @@ namespace CasesFixture
             "newer" => Updater.Newer(Text(arguments, 0), Text(arguments, 1)),
             "target" => Updater.Target(Text(arguments, 0), Text(arguments, 1), Text(arguments, 2)!),
             "builds_here" => Updater.BuildsHere(Text(arguments, 0)!, Text(arguments, 1), arguments[2].GetBoolean()),
+            "game_needs_update" => Updater.GameNeedsUpdate(Text(arguments, 0), Text(arguments, 1), arguments[2].GetBoolean()),
             _ => throw new InvalidOperationException("The cases name a kind this fixture does not run: " + kind),
         };
 

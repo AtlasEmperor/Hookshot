@@ -886,11 +886,12 @@ class Builder(tk.Tk):
             return
         game, kept = linux_update.game_version(self.launch_folder)
         target = linux_update.update_target(self.latest, self.tools, self.switching())
+        offered = linux_update.game_needs_update(game, target, self.switching())
         show = False
-        if target and game and game != target and kept:
+        if offered and kept:
             self.launch_status.set("Update available: %s" % target)
             show = True
-        elif target and game and game != target:
+        elif offered:
             self.launch_status.set("%s is out. Build this folder again with Hookshot Builder to get it." % target)
         elif game and self.latest is None:
             self.launch_status.set("Up to date with this builder (GitHub did not answer)")

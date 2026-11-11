@@ -51,21 +51,23 @@ static class Updater
     /// The release that holds a version's files: the nightly's are on the rolling nightly release
     static string ReleaseOf(string tag) => TrackOf(tag) == Nightly ? Nightly : tag;
 
+    /// The order of a version: vX.Y.Z[-rc.N] in semver order, a nightly just after the version it names; null when it is not one
+    static long[]? VersionKey(string? v)
+    {
+        if (v == null) return null;
+        var after = NightlyName.Match(v);
+        var m = ReleaseName.Match(after.Success ? v[..after.Index] : v);
+        if (!m.Success) return null;
+        return new[] { long.Parse(m.Groups[1].Value), long.Parse(m.Groups[2].Value), long.Parse(m.Groups[3].Value),
+                       m.Groups[4].Success ? long.Parse(m.Groups[4].Value) : long.MaxValue, after.Success ? 1 : 0 };
+    }
+
     /// a newer than b, both vX.Y.Z[-rc.N] in semver order (v2.1.0-rc.1 < v2.1.0-rc.2 < v2.1.0); a nightly counts as just after
     /// the version it names; false when either is not a version
     public static bool Newer(string? a, string? b)
     {
-        static long[]? Key(string? v)
-        {
-            if (v == null) return null;
-            var after = NightlyName.Match(v);
-            var m = ReleaseName.Match(after.Success ? v[..after.Index] : v);
-            if (!m.Success) return null;
-            return new[] { long.Parse(m.Groups[1].Value), long.Parse(m.Groups[2].Value), long.Parse(m.Groups[3].Value),
-                           m.Groups[4].Success ? long.Parse(m.Groups[4].Value) : long.MaxValue, after.Success ? 1 : 0 };
-        }
-        var x = Key(a);
-        var y = Key(b);
+        var x = VersionKey(a);
+        var y = VersionKey(b);
         if (x == null || y == null) return false;
         for (var i = 0; i < x.Length; i++)
             if (x[i] != y[i]) return x[i] > y[i];
@@ -88,6 +90,18 @@ static class Updater
     /// Never for a nightly's target: two nightlies of one version compare equal, and the next one is another build.
     public static bool BuildsHere(string target, string? tools, bool named) =>
         target == tools || (!named && TrackOf(target) != Nightly && Newer(tools, target));
+
+    /// Whether a game folder built as game is offered an update to target.
+    /// Never when the folder is at the target or names no version.
+    /// Always after a switch of track, and for a nightly's target: another build is the update.
+    /// Otherwise only when the target is newer: a folder is never taken back to an older release.
+    /// A version that names no release cannot be ordered, so the folder is offered the update.
+    public static bool GameNeedsUpdate(string? game, string? target, bool switching)
+    {
+        if (game == null || target == null || game == target) return false;
+        if (switching || TrackOf(target) == Nightly) return true;
+        return VersionKey(game) == null || VersionKey(target) == null || Newer(target, game);
+    }
 
     /// The newest build of a track, quietly (null: GitHub did not answer). release: the latest release, as before; rc: the
     /// newest of the release candidates and releases, else the latest release; nightly: the nightly's setup list's tag

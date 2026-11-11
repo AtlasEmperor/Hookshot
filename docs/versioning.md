@@ -216,12 +216,14 @@ and git describe's `v2.1.0-rc.1-3-g1a2b3c4` the nightly (named with `--long`, so
 
 | Track | Updates to | Offered when |
 |---|---|---|
-| Release | the latest release | the builders: it is newer than the build installed, never an older release; the game: it is another version |
+| Release | the latest release | it is newer: never an older release |
 | Release candidate | the newest of the release candidates and releases (semver: `rc.2` > `rc.1`, `2.1.0` > `2.1.0-rc.2`) | it is newer: never an older release, and the release of its own version once that ships |
 | Nightly | the `nightly` release's build (its list's `tag` line) | it is another build |
 
-Choosing another track installs that track's newest build, an older version too (the builder asks first). The game's
-own update check (`host/hos_update.c`) follows the track of the folder's version. The same rules are in
+On the Release and Release candidate tracks the builders and the game never offer a game folder or a build an older
+release; a version that names no release (`dev`, a commit) is offered the update as it is. Choosing another track
+installs that track's newest build, an older version too (the builder asks first). The game's own update check
+(`host/hos_update.c`) follows the track of the folder's version. The same rules are in
 `builder/HookshotBuilder/Updater.cs`, `builder/linux/linux_update.py` and `host/hos_update.c`. The cases in
 `tests/update_cases.json` hold the copies together: `tests/test_update_tracks.py` runs them on the Linux updater and the
 game's C, `tests/test_updater_cases.py` on the Windows builder. A release candidate's and the nightly's

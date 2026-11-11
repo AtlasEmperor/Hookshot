@@ -1,8 +1,10 @@
-/* (hookshot) The update offer: at start, the latest release on GitHub is asked for (a few seconds at most, nothing when offline), and
-   when it is not the release this game folder was built with, the player is asked whether to update. Yes starts the Hookshot Builder
-   that made the folder (hookshot_version.txt, written by nx2/make_game.py) with --update: it downloads the new release and builds the
-   folder again from the game files the folder keeps, and the game closes. A folder with no hookshot_version.txt (built from the
-   repository, or before updates came in) is never asked about. HOOKSHOT_NO_UPDATE_CHECK=1 (hookshot_env.txt) turns it off */
+/* (hookshot) The update offer: at start, GitHub is asked for the newest build of the folder's track (a few seconds at most).
+   Offline, nothing is asked.
+   When offer_wanted says this game folder needs it, the player is asked whether to update.
+   Yes starts the Hookshot Builder that made the folder (hookshot_version.txt, written by nx2/make_game.py) with --update.
+   It downloads the new release and builds the folder again from the game files the folder keeps, and the game closes.
+   A folder with no hookshot_version.txt (built from the repository, or before updates came in) is never asked about.
+   HOOKSHOT_NO_UPDATE_CHECK=1 (hookshot_env.txt) turns it off */
 #if defined(_WIN32) || defined(__linux__)
 #include <ctype.h>
 #include <stdlib.h>
@@ -18,11 +20,11 @@ static int safe_tag(const char *s) {
     return 1;
 }
 
-/* (the update tracks, from the folder's version: a release (v2.0.7) is offered the latest release as before; a release
-   candidate (v2.1.0-rc.1) the newest of the release candidates and the releases, only when it is newer (so never an older
-   release, and its own version's release once that ships); a nightly (git describe --long's v2.1.0-rc.1-3-g1a2b3c4) the
-   nightly's build whenever it is another. The builder's Track menu switches track; builder/linux/linux_update.py has the
-   same rules) */
+/* (the update tracks, from the folder's version, as builder/linux/linux_update.py and builder/HookshotBuilder/Updater.cs have them:
+   a release (v2.0.7) and a release candidate (v2.1.0-rc.1) are offered a newer release only, never an older one.
+   A release is asked for the latest release; a release candidate for the newest of the release candidates and the releases.
+   A nightly (git describe --long's v2.1.0-rc.1-3-g1a2b3c4) is offered the nightly's build whenever it is another.
+   The builder's Track menu switches track) */
 static int nightly_version(const char *s) {
     size_t n = strlen(s), h;
     if (n > 6 && !strcmp(s + n - 6, "-dirty")) n -= 6;
@@ -56,6 +58,22 @@ static int newer_version(const char *a, const char *b) {
     for (int i = 0; i < 4; i++)
         if (x[i] != y[i]) return x[i] > y[i];
     return 0;
+}
+
+/* the number of fields parse_version reads: major, minor, patch and the release candidate's number */
+enum { VERSION_FIELDS = 4 };
+
+/* whether the game offers the tag to a folder built as have.
+   A nightly is offered any other build.
+   A release candidate is offered a newer release only.
+   A dirty or otherwise hyphenated version that parse_version cannot read is not offered one.
+   A version without a hyphen is offered a newer release only.
+   Exception: when it or the tag names no release (dev, a commit), the tag is offered */
+static int offer_wanted(const char *have, const char *tag) {
+    long have_fields[VERSION_FIELDS], tag_fields[VERSION_FIELDS];
+    if (nightly_version(have)) return 1;
+    if (!strchr(have, '-') && !(parse_version(have, have_fields) && parse_version(tag, tag_fields))) return 1;
+    return newer_version(tag, have);
 }
 
 /* the first "tag_name":"..." of a body from GitHub's API, or a setup list's "tag " line */
@@ -195,7 +213,7 @@ void hos_update_check(void) {
     }
     fprintf(stderr, "update: this folder is %s, the latest release is %s\n", have, tag);
     if (!strcmp(tag, have) || !strcmp(tag, skipped)) return;
-    if (strchr(have, '-') && !nightly_version(have) && !newer_version(tag, have)) return;   /* (a release candidate: newer only) */
+    if (!offer_wanted(have, tag)) return;
 
     wchar_t wtag[128], whave[128], wbuilder[MAX_PATH], text[2048];
     MultiByteToWideChar(CP_UTF8, 0, tag, -1, wtag, 128);
@@ -364,7 +382,7 @@ void hos_update_check(void) {
     }
     fprintf(stderr, "update: this folder is %s, the latest release is %s\n", have, tag);
     if (!strcmp(tag, have) || !strcmp(tag, skipped)) return;
-    if (strchr(have, '-') && !nightly_version(have) && !newer_version(tag, have)) return;   /* (a release candidate: newer only) */
+    if (!offer_wanted(have, tag)) return;
     snprintf(path, sizeof path, "%shookshot_version.txt", dir);
     const int has_builder = installed_builder(builder, sizeof builder) ||
                             (read_value(path, "builder", builder, sizeof builder) && access(builder, X_OK) == 0);
