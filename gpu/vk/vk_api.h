@@ -44,6 +44,9 @@ enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
    From the host (option_set): the Output resolution the running game has, in the same form. */
 enum { HOS_OPT_OUTPUT_RES = 47, HOS_OPT_HANDHELD, HOS_OPT_OUTPUT_RUNNING };
 enum { HOS_OUTPUT_WIDTH_SHIFT = 16, HOS_OUTPUT_HEIGHT_MASK = 0xffff };   /* (an Output resolution's two halves) */
+/* (hookshot) The Insert menu's Game frame rate cap, its row (0 the console's 60, then 90, 120, 144, 165, 240, 6 Uncapped): the
+   host follows it while the game runs (host/nn_vi.c fps_max) */
+enum { HOS_OPT_FPS_CAP = 50 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face

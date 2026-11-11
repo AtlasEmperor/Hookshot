@@ -18,12 +18,13 @@ static volatile LONG nvsync;
 static HANDLE vsync_thread;
 
 static int fps_max(void);   /* (below: HOS_FPS_MAX) */
+/* The vsync event's period: the frame rate cap's, at each event (the Insert menu's row while the game runs) */
+static int64_t vsync_period(void) { return 1000000000LL / fps_max(); }
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
-    const int64_t period = 1000000000LL / fps_max();
-    int64_t next = hos_now_ns() + period;
+    int64_t next = hos_now_ns() + vsync_period();
     for (;;) {
-        const int64_t now = hos_now_ns();
+        const int64_t now = hos_now_ns(), period = vsync_period();
         if (next > now) hos_sleep_ns(next - now);
         next += period;
         if (next < hos_now_ns()) next = hos_now_ns() + period;   /* (fell behind: no burst of vsyncs) */
@@ -111,22 +112,33 @@ static volatile int present_interval = 1;
    own limiter (+0xfc) and the vsync event go up to it, and the game's time step is the frames' own time (realtime_step), so the game is
    not sped up. Uncapped is a cap of 1000 (fps_max's FPS_UNCAPPED), the pacing's 1 ms: the frames come as fast as the PC makes them (a display that
    waits for its refresh, V-Sync On, still holds them to its rate). HOS_FPS_MAX=<61-1000> over the row, for a run. Unset or 60: 60, as
-   on the console */
+   on the console. Read at each use: the row while the renderer is up (HOS_OPT_FPS_CAP), the options file's line before; a change
+   takes at the next present */
 int hos_ini_option(const char *key, int otherwise);   /* (nn_applet.c) */
+int rx_option(int id, int otherwise);   /* (rx_backend.c) */
 static int fps_max(void) {
     enum { FPS_UNCAPPED = 1000 };
-    static int v = -1;
-    if (v < 0) {
-        /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240, 6 Uncapped; a value
-           this build does not know is 60. HOS_FPS_MAX over it) */
-        static const int caps[] = {60, 90, 120, 144, 165, 240, FPS_UNCAPPED};
-        enum { CAPS = sizeof caps / sizeof caps[0] };
-        const int i = hos_ini_option("frame_rate_cap", 0);
+    /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240, 6 Uncapped; a value
+       this build does not know is 60. HOS_FPS_MAX over it) */
+    static const int caps[] = {60, 90, 120, 144, 165, 240, FPS_UNCAPPED};
+    enum { CAPS = sizeof caps / sizeof caps[0] };
+    static int looked, has_env, env, boot_row = -1;
+    if (!looked) {
         const char *e = getenv("HOS_FPS_MAX");
-        const int want = e ? atoi(e) : caps[i >= 0 && i < CAPS ? i : 0];
-        v = want > 60 ? (want > FPS_UNCAPPED ? FPS_UNCAPPED : want) : 60;
+        has_env = e != NULL, env = e ? atoi(e) : 0, looked = 1;
+    }
+    int i = has_env ? 0 : rx_option(HOS_OPT_FPS_CAP, -1);
+    if (!has_env && i < 0) {   /* (no renderer yet: the options file, read once) */
+        if (boot_row < 0) boot_row = hos_ini_option("frame_rate_cap", 0);
+        i = boot_row;
+    }
+    const int want = has_env ? env : caps[i >= 0 && i < CAPS ? i : 0];
+    const int v = want > 60 ? (want > FPS_UNCAPPED ? FPS_UNCAPPED : want) : 60;
+    static int shown = 60;   /* (the cap the log last named: the console's 60 is not named at the start) */
+    if (__atomic_exchange_n(&shown, v, __ATOMIC_RELAXED) != v) {
         if (v == FPS_UNCAPPED) hos_log("vi: frame rate uncapped: pacing, the game's limiter and its time step follow the frames");
         else if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
+        else hos_log("vi: frame rate cap 60, the console's: the game's own limiter and time step");
     }
     return v;
 }
@@ -348,8 +360,9 @@ static void realtime_step(int64_t now) {
     if (!mod) return;
     {   /* (hookshot) The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
            variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. HOS_FPS_TARGET=<fps>: that rate kept, 0: left alone;
-           HOS_FPS_LOG=1: what the game asks for, every 300 presents */
-        static int target = -1, log_on = -1;
+           HOS_FPS_LOG=1: what the game asks for, every 300 presents. Raised from the game's own value, never from an earlier
+           raise: a lower cap puts the game's value back */
+        static int target = -1, log_on = -1, written, game_value;
         static long long n;
         if (target < 0) target = getenv("HOS_FPS_TARGET") ? atoi(getenv("HOS_FPS_TARGET")) : 0, log_on = getenv("HOS_FPS_LOG") != NULL;
         int *limit = (int *)GP(mod + 0xfc);
@@ -369,8 +382,11 @@ static void realtime_step(int64_t now) {
             }
             clock_before = game_clock, at_before = now;
         }
-        if (target && *limit > 0 && *limit < target) *limit = target;
-        if (fps_max() > 60 && *limit > 0 && *limit < fps_max()) *limit = fps_max();
+        if (*limit != written) game_value = *limit;   /* (the game's own, the last it set) */
+        int want = game_value;
+        if (target && want > 0 && want < target) want = target;
+        if (fps_max() > 60 && want > 0 && want < fps_max()) want = fps_max();
+        *limit = written = want;
     }
     /* (the Insert menu's Game speed "per frame": a frame is a 60th of a second of game time. Not past 60 fps: the game would run
        faster than real time, so a cap above 60 keeps the real-time step whatever that row says) */

@@ -4452,6 +4452,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == 11) return opts.stick_dead_zone;
         if (id == HOS_OPT_OUTPUT_RES) return menu_output();   // (host/nn_applet.c applies both while the game runs)
         if (id == HOS_OPT_HANDHELD) return opts.handheld;
+        if (id == HOS_OPT_FPS_CAP) return opts.fps_cap;   // (host/nn_vi.c follows it while the game runs)
         if (id == HOS_OPT_CHEAT_HEARTS) return menu_heart_protection();
         if (id == HOS_OPT_CHEAT_FLIGHT) return menu_player_flight();
         if (id == HOS_OPT_CHEAT_ACTION) return menu_take_cheat_action();
