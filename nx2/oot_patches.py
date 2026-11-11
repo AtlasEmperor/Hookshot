@@ -543,7 +543,8 @@ def apply(gen, *, protect_hearts=False, required=False):
 #   textures are made at it.
 # - f_810a7b70 sets up the display-size object (B = [[0x84ca29c0]+216]) from a config (x1): its docked size list (+8, first
 #   2560 x 1440) is the frame's base (B+244; the frame is the base times the graphics scale's factor, f_806702e0, capped by the
-#   scale's display class: docked 3840 x 2160 at scale 0). Its first entry asks the host when it differs.
+#   scale's display class: docked 3840 x 2160 at scale 0). Its first entry asks the host when it differs. The host keeps B
+#   (hos_display_object) to change the base while the game runs: the game makes its frame from it again on message 300.
 OUT_DECL = "uint32_t hos_output_size(int height);\nuint64_t hos_rt_pool_size(uint64_t game);\n"
 OUT_EDITS = [
     # (the picture's 2560 x 1440 at 0x81202ee4, not f_831f3200's copy at +0xb68; nx2/oot_wide.py's widescreen size, after it,
@@ -558,7 +559,8 @@ OUT_EDITS = [
      "    { uint64_t _r = ((uint64_t)0 | ((c->x[1]) << 0)); c->x[20] = _r; }\n",
      "    { uint64_t _a=c->x[0], _b=724ULL; uint64_t _r=_a+_b; c->x[21]=_r; }\n"
      "    { uint64_t _r = ((uint64_t)0 | ((c->x[1]) << 0)); c->x[20] = _r; }\n"
-     "    if ((hos_output_size(0) != 2560 || hos_output_size(1) != 1440) && recomp_load32(c, c->x[20] + 8) == 2560) { recomp_store32(c, c->x[20] + 8, hos_output_size(0)); recomp_store32(c, c->x[20] + 12, hos_output_size(1)); }\n"),
+     "    if ((hos_output_size(0) != 2560 || hos_output_size(1) != 1440) && recomp_load32(c, c->x[20] + 8) == 2560) { recomp_store32(c, c->x[20] + 8, hos_output_size(0)); recomp_store32(c, c->x[20] + 12, hos_output_size(1)); }\n"
+     "    { extern volatile uint64_t hos_display_object; hos_display_object = c->x[0]; }\n"),
     # - f_80ea2f30: the 3D's largest size, ResolutionParam's BaseResolution (or 1920 x 1080 as constants), 3/4 of 2560 x 1440;
     #   above it the game takes a smaller upscale network (1/3: 1280 x 720 at 4K). Scaled with the output.
     ("c->x[30] = 0x80ea2ffcULL; f_831cca50(c);\n"

@@ -20,6 +20,7 @@ def main():
     menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8")
     fixture = r'''
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -44,7 +45,8 @@ int upscaler() { return up_now; }
 #include "gpu/vk/upscaler_rows.h"
 using namespace mkwvk;
 namespace ur = upscaler_rows;
-''' + host[host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("HLE(_ZN2nn2oe16GetOperationModeEv)")] + menu[
+''' + host[
+        host.index("int hos_ini_option(const char *key, int otherwise);"):host.index("\n}\n", host.index("uint64_t hos_rt_pool_size(")) + 3] + menu[
         menu.index("struct Out {"):menu.index("/// The Render resolution: the value chosen")] + menu[
         menu.index("const char* tx_output_res("):menu.index("const char* tx_speed(")] + r'''
 int main(int argc, char **argv) {

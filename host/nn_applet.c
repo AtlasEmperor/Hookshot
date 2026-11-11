@@ -4,6 +4,7 @@
 #include "hos.h"
 #include "hos_paths.h"
 #include "hos_wide_size.h"
+#include "../gpu/vk/vk_api.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,10 +165,14 @@ static int output_mode(void) {   /* (an explicit size: 1; the game's own: 0) */
     }
     return output_w != 0;
 }
-uint32_t hos_output_size(int height) {
-    if (!output_mode()) return height ? 1440 : 2560;
-    return height ? output_h : output_w;
+/* (an Output resolution as width << OUTPUT_WIDTH_SHIFT | height, the Insert menu's form, 0 the game's own) */
+enum { OUTPUT_WIDTH_SHIFT = 16, OUTPUT_HEIGHT_MASK = 0xffff };
+static int boot_output(void) { return output_mode() ? (int)(output_w << OUTPUT_WIDTH_SHIFT | output_h) : 0; }
+static uint32_t display_size_of(int output, int height) {   /* (its display size) */
+    if (!output) return height ? 1440 : 2560;
+    return height ? (uint32_t)output & OUTPUT_HEIGHT_MASK : (uint32_t)output >> OUTPUT_WIDTH_SHIFT;
 }
+uint32_t hos_output_size(int height) { return display_size_of(boot_output(), height); }
 /* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
@@ -191,8 +196,104 @@ uint64_t hos_rt_pool_size(uint64_t game) {
     if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
     return v;
 }
-HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */
-HLE(_ZN2nn2oe18GetPerformanceModeEv) { RET(handheld() ? 0 : 1); }   /* PerformanceMode_Normal / _Boost (docked) */
+/* (hookshot) The Profile and the Output resolution while the game runs: the Insert menu's values (rx_option, HOS_HANDHELD and
+   HOS_OUTPUT_RES over them) reach the game as a console's dock and graphics-scale changes do.
+   They go through the notifications it polls each frame (TryPopNotificationMessage).
+   On 30 and 31 (operation and performance mode changed) it reads its modes again.
+   On 300 it reads its graphics scale and its display size, the display-size object's base (+244, nx2/oot_patches.py).
+   That base is written as the game pops that 300.
+   An output the boot's window and 3D setup cannot show waits for the next start: one other than the boot's display size,
+   except one smaller on both sides than the shipped 2560 x 1440 from a start at that size. */
+int rx_option(int id, int otherwise);
+void rx_option_set(int id, int value);
+volatile uint64_t hos_display_object;   /* (nx2/oot_patches.py: f_810a7b70's display-size object) */
+enum { OE_OPERATION_MODE_CHANGED = 30, OE_PERFORMANCE_MODE_CHANGED = 31, OE_GRAPHICS_SCALE_CHANGED = 300 };
+enum { OE_DISPLAY_BASE = 244 };   /* (the display-size object's frame base: width, then height) */
+/* (its flags word, and the flag that makes the frame's maker, f_806702e0, build the frame again from the base on its next run,
+   which clears it: without it a base change under the same scale enum, 2560 x 1440 to 1920 x 1080, is not taken) */
+enum { OE_DISPLAY_FLAGS = 8, OE_DISPLAY_REBUILD = 0x80000 };
+enum { GAME_OUTPUT = 2048 << OUTPUT_WIDTH_SHIFT | 1152 };   /* (the game's own Output resolution, as the menu names it: hos_output_parse) */
+static const uint32_t oe_messages[] = {OE_OPERATION_MODE_CHANGED, OE_PERFORMANCE_MODE_CHANGED, OE_GRAPHICS_SCALE_CHANGED};
+static volatile LONG oe_pending;   /* (bit i: oe_messages[i] waits for the game's next pop) */
+/* (what the game was told: 1 handheld, and the Output resolution; -1: the boot's) */
+static volatile LONG live_handheld = -1, live_output = -1;
+static volatile int64_t oe_display_size;   /* (the display size the next 300 brings: width, height << 32; 0 none) */
+static int answered_handheld(void) { return live_handheld >= 0 ? live_handheld : handheld(); }
+static int answered_output(void) { return live_output >= 0 ? live_output : boot_output(); }
+static int answered_scale(void) { return answered_handheld() || answered_output() == 0; }   /* (the scale enum: 1 x0.8, 0 x1) */
+static int oe_pop(uint32_t *message) {
+    for (LONG was = oe_pending; was; was = oe_pending) {
+        int i = 0;
+        while (!(was >> i & 1)) i++;
+        if (InterlockedCompareExchange(&oe_pending, was & ~(1L << i), was) == was) {
+            *message = oe_messages[i];
+            /* (written by the thread that pops it, the game's main thread: the one that makes its frame from the base,
+               f_806702e0, each frame, so it never reads the two words half written) */
+            const int64_t size = oe_messages[i] == OE_GRAPHICS_SCALE_CHANGED ? InterlockedExchange64(&oe_display_size, 0) : 0;
+            if (size) {
+                *(uint32_t *)GP(hos_display_object + OE_DISPLAY_BASE) = (uint32_t)size;
+                *(uint32_t *)GP(hos_display_object + OE_DISPLAY_BASE + 4) = (uint32_t)(size >> 32);
+                *(uint32_t *)GP(hos_display_object + OE_DISPLAY_FLAGS) |= OE_DISPLAY_REBUILD;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+static void oe_post(int i) {
+    for (LONG was = oe_pending; InterlockedCompareExchange(&oe_pending, was | 1L << i, was) != was; was = oe_pending) {}
+}
+/* Whether the running game takes this Output resolution without a restart */
+static int takes_output(int output) {
+    extern volatile uint64_t hos_wide_out;
+    const uint32_t w = display_size_of(output, 0), h = display_size_of(output, 1);
+    if (w == hos_output_size(0) && h == hos_output_size(1)) return 1;
+    /* (a smaller one from the shipped 2560 x 1440, whose 3D setup it keeps; a smaller one from a larger start keeps that start's
+       3D setup, untried; a widescreen picture's base is its own, host/hos_main.c) */
+    return w < hos_output_size(0) && h < hos_output_size(1) && hos_output_size(0) == display_size_of(0, 0) &&
+           hos_output_size(1) == display_size_of(0, 1) && hos_display_object && !hos_wide_out;
+}
+/* The menu's Output resolution, by hos_output_parse's rules */
+static int menu_output_of(int value) {
+    char text[32];
+    uint32_t w, h;
+    snprintf(text, sizeof text, "%ux%u", (unsigned)value >> OUTPUT_WIDTH_SHIFT, (unsigned)value & OUTPUT_HEIGHT_MASK);
+    return hos_output_parse(text, &w, &h) ? (int)(w << OUTPUT_WIDTH_SHIFT | h) : 0;
+}
+/* Each game present (host/nn_vi.c): the menu's Profile and Output resolution, sent to the game when they change; the menu is told
+   the Output resolution the running game has */
+void hos_applet_presented(void) {
+    static int pinned_handheld = -1, pinned_output, told_running = -1, menu_value = -1, menu_output;
+    if (pinned_handheld < 0) pinned_handheld = getenv("HOS_HANDHELD") != NULL, pinned_output = getenv("HOS_OUTPUT_RES") != NULL;
+    const int value = rx_option(HOS_OPT_OUTPUT_RES, -1);
+    if (value < 0) return;   /* (no renderer yet: the boot's answers stand) */
+    if (value != menu_value) menu_output = menu_output_of(menu_value = value);
+    const int want_handheld = pinned_handheld ? handheld() : rx_option(HOS_OPT_HANDHELD, 0) != 0;
+    const int want_output = !pinned_output && takes_output(menu_output) ? menu_output : answered_output();
+    const int was_handheld = answered_handheld(), was_output = answered_output(), was_scale = answered_scale();
+    if (want_handheld != was_handheld || want_output != was_output) {
+        const int resized = display_size_of(want_output, 0) != display_size_of(was_output, 0) ||
+                            display_size_of(want_output, 1) != display_size_of(was_output, 1);
+        if (resized) {   /* (the game takes it with the 300 below: oe_pop) */
+            const int64_t size = (int64_t)display_size_of(want_output, 1) << 32 | display_size_of(want_output, 0);
+            InterlockedExchange64(&oe_display_size, size);
+        }
+        InterlockedExchange(&live_output, want_output);
+        InterlockedExchange(&live_handheld, want_handheld);
+        if (want_handheld != was_handheld) oe_post(0), oe_post(1);
+        const int rescaled = resized || answered_scale() != was_scale;
+        if (rescaled) oe_post(2);
+        const unsigned named = want_output ? (unsigned)want_output : (unsigned)GAME_OUTPUT;
+        hos_log("oe: %s, output resolution %ux%u%s%s: the game told%s%s", want_handheld ? "handheld" : "docked",
+                named >> OUTPUT_WIDTH_SHIFT, named & OUTPUT_HEIGHT_MASK, want_output ? "" : " (the game's)",
+                resized ? " (with its display size)" : "",
+                want_handheld != was_handheld ? " (operation and performance modes)" : "", rescaled ? " (graphics scale)" : "");
+    }
+    const int running = answered_output() ? answered_output() : GAME_OUTPUT;
+    if (running != told_running) rx_option_set(HOS_OPT_OUTPUT_RUNNING, told_running = running);
+}
+HLE(_ZN2nn2oe16GetOperationModeEv) { RET(answered_handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */
+HLE(_ZN2nn2oe18GetPerformanceModeEv) { RET(answered_handheld() ? 0 : 1); }   /* PerformanceMode_Normal / _Boost (docked) */
 HLE(_ZN2nn2oe20GetCurrentFocusStateEv) { RET(1); }    /* FocusState_InFocus */
 HLE(_ZN2nn2oe25GetProgramTotalActiveTimeEv) { RET(hos_now_ns() - boot_ns); }
 HLE(_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_) {
@@ -208,9 +309,18 @@ HLE(_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe28SetResumeNotificationEnabledEb) {}
 HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) {}
-/* No system notifications ever arrive: TryPop says none, Pop waits forever (as it would on a quiet console). */
-HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
-HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
+/* No system notifications arrive but hos_applet_presented's: TryPop says none, Pop waits (as it would on a quiet console). */
+HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) {
+    uint32_t message;
+    const int got = oe_pop(&message);
+    if (got && ARG(0)) G32(ARG(0)) = message;
+    RET(got);
+}
+HLE(_ZN2nn2oe22PopNotificationMessageEv) {
+    uint32_t message;
+    while (!oe_pop(&message)) hos_sleep_ns(1000000000LL);
+    RET(message);
+}
 
 /* ---- nn::account: one user ------------------------------------------------------------------------------------ */
 static const uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};
@@ -419,7 +529,8 @@ HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     uint32_t bits;
     memcpy(&bits, &one, 4);
     c->vreg[0][0] = bits, c->vreg[0][1] = 0;
-    c->x[0] = output_mode() ? 0 : 1;   /* (the scale enum the game reads, w0: x1 for a chosen output, x0.8 as before) */
+    /* (the scale enum the game reads, w0: x1 for a chosen output, x0.8 for the game's and handheld) */
+    c->x[0] = answered_scale();
 }
 HLE(_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) {}
