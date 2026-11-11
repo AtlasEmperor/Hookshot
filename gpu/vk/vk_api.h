@@ -35,6 +35,10 @@ enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DIS
 /* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled;
    44 is reserved for HOS_OPT_SKIP_TITLE) */
 enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
+/* (hookshot) The Insert menu's Output resolution as width << 16 | height (2048x1152 the game's own), and its Profile (1 Handheld).
+   The host applies both while the game runs (host/nn_applet.c).
+   From the host (option_set): the Output resolution the running game has, in the same form. */
+enum { HOS_OPT_OUTPUT_RES = 47, HOS_OPT_HANDHELD, HOS_OPT_OUTPUT_RUNNING };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face
@@ -198,7 +202,8 @@ typedef struct MkwVkRenderer {
     /* (hookshot) a fence of one queue: the value its own last submission signals (nvnQueueFenceSync) */
     uint64_t (*nvn_fence_q)(uint64_t queue);
     /* (hookshot, the Insert menu) a setting changed from the game's side, kept in the options file: 7 the mouse's sensitivity
-       in percent (the - and = keys, host/nn_hid.c) */
+       in percent (the - and = keys, host/nn_hid.c).
+       HOS_OPT_OUTPUT_RUNNING, the Output resolution the running game has (host/nn_applet.c), is not kept. */
     void (*option_set)(int id, int value);
     /* (version 14) one coherent camera-jitter sample, without per-axis queries */
     void (*jitter_sample)(MkwVkJitter *out);
