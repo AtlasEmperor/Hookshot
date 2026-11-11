@@ -8,10 +8,11 @@ using System.Windows;
 
 namespace HookshotBuilder;
 
-/// The game's update offer (host/hos_update.c) starts this app with --update <game folder> --tag <release>. When these tools are
-/// not that release, the release's HookshotBuilder.zip is downloaded and unpacked beside this app, and the new app is started with
-/// --fetched to build the folder; when they are, the folder is built again here (nx2/make_game.py --update: from the game files the
-/// folder keeps).
+/// The game's update offer (host/hos_update.c) starts this app with --update <game folder> --tag <release>.
+/// When these tools are older than that release, the release's HookshotBuilder.zip is downloaded and unpacked beside this app.
+/// The new app is started with --fetched to build the folder.
+/// When these tools are that release or a newer one (GitHub's latest link lags right after a publish), the folder is built again here.
+/// The build is nx2/make_game.py --update, from the game files the folder keeps.
 static class Updater
 {
     const string Latest = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest";
@@ -71,14 +72,22 @@ static class Updater
         return false;
     }
 
-    /// What to update to: the track's newest (latest) for a release as before, a nightly, or after a switch of track (even
-    /// an older version); for a release candidate only when it is newer, so it is never taken back to an older release
+    /// What to update to: the track's newest build (latest) when it is newer than these tools.
+    /// A nightly's build whenever it is another build, and after a switch of track the newest even when it is older.
+    /// Otherwise these tools' own version: a build is never taken back to an older release.
     public static string? Target(string? latest, string? tools, string track)
     {
         if (latest == null) return tools;
-        if (tools == null || track != Candidate || TrackOf(tools) != Candidate) return latest;
+        if (tools == null || track != TrackOf(tools) || TrackOf(latest) == Nightly) return latest;
         return Newer(latest, tools) ? latest : tools;
     }
+
+    /// Whether a folder is built here with these tools, not with a download of the target's.
+    /// True when the target is these tools' own version or an older one (GitHub's latest link lags right after a publish).
+    /// Never for a switch of track (named).
+    /// Never for a nightly's target: two nightlies of one version compare equal, and the next one is another build.
+    public static bool BuildsHere(string target, string? tools, bool named) =>
+        target == tools || (!named && TrackOf(target) != Nightly && Newer(tools, target));
 
     /// The newest build of a track, quietly (null: GitHub did not answer). release: the latest release, as before; rc: the
     /// newest of the release candidates and releases, else the latest release; nightly: the nightly's setup list's tag
@@ -198,8 +207,9 @@ static class Updater
         Application.Current.Shutdown();
     }
 
-    /// The game in folder built again with the latest release: here when these tools are it (or fetched), else after the setup
-    /// installed it (it starts the new builder with --update folder --tag t --fetched)
+    /// The game in folder built again with the release asked for (tag), or the latest.
+    /// Here when these tools build it (BuildsHere) or are just downloaded (fetched).
+    /// Else after the setup installed it: it starts the new builder with --update folder --tag t --fetched.
     public static async void UpdateFolder(MainWindow w, string folder, string? tag, bool fetched, bool named = false)
     {
         w.BeginUpdate(folder, tag);
@@ -261,7 +271,7 @@ static class Updater
                 }
             }
             if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
-            if (newTag == tools.Version)
+            if (BuildsHere(newTag, tools.Version, named))
             {
                 w.UpdateBuild(tools, folder);
                 return;

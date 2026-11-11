@@ -216,7 +216,7 @@ and git describe's `v2.1.0-rc.1-3-g1a2b3c4` the nightly (named with `--long`, so
 
 | Track | Updates to | Offered when |
 |---|---|---|
-| Release | the latest release | it is another version (as before) |
+| Release | the latest release | the builders: it is newer than the build installed, never an older release; the game: it is another version |
 | Release candidate | the newest of the release candidates and releases (semver: `rc.2` > `rc.1`, `2.1.0` > `2.1.0-rc.2`) | it is newer: never an older release, and the release of its own version once that ships |
 | Nightly | the `nightly` release's build (its list's `tag` line) | it is another build |
 
