@@ -38,10 +38,12 @@ enum { HOS_OPT_HDR_STATUS = 46 };
 /* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled;
    44 is reserved for HOS_OPT_SKIP_TITLE) */
 enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
-/* (hookshot) The Insert menu's Output resolution as width << 16 | height (2048x1152 the game's own), and its Profile (1 Handheld).
+/* (hookshot) The Insert menu's Output resolution as width << HOS_OUTPUT_WIDTH_SHIFT | height (2048x1152 the game's own).
+   Its Profile: 1 Handheld.
    The host applies both while the game runs (host/nn_applet.c).
    From the host (option_set): the Output resolution the running game has, in the same form. */
 enum { HOS_OPT_OUTPUT_RES = 47, HOS_OPT_HANDHELD, HOS_OPT_OUTPUT_RUNNING };
+enum { HOS_OUTPUT_WIDTH_SHIFT = 16, HOS_OUTPUT_HEIGHT_MASK = 0xffff };   /* (an Output resolution's two halves) */
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face

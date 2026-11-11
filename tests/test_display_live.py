@@ -28,7 +28,7 @@ def main():
     a = p.parse_args()
     host = (ROOT / "host" / "nn_applet.c").read_text(encoding="utf-8")
     api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
-    ids = between(api, "enum { HOS_OPT_OUTPUT_RES", "\n") + "\n"
+    ids = between(api, "enum { HOS_OPT_OUTPUT_RES", "\n") + "\n" + between(api, "enum { HOS_OUTPUT_WIDTH_SHIFT", "\n") + "\n"
     fixture = r'''
 #include <cstdint>
 #include <cstdio>
@@ -93,7 +93,7 @@ static int ask_scale() { Ctx c{}; imp__ZN2nn2oe23GetCurrentGraphicsScaleEv(&c); 
 static uint32_t base(int k) { return *(uint32_t *)GP(0x100 + 244 + 4 * k); }
 static uint32_t& flags() { return *(uint32_t *)GP(0x100 + 8); }   // (the display-size object's flags: 0x80000 rebuild the frame)
 static void tick(int output, int handheld) { menu_up = 1, menu_output = output, menu_handheld = handheld; hos_applet_presented(); }
-static int size(int w, int h) { return w << 16 | h; }   // (the menu's form: vk_api.h HOS_OPT_OUTPUT_RES)
+static int size(int w, int h) { return w << HOS_OUTPUT_WIDTH_SHIFT | h; }   // (the menu's form: vk_api.h HOS_OPT_OUTPUT_RES)
 static const int GAME = size(2048, 1152);   // (the game's own)
 
 int main(int argc, char **argv) {

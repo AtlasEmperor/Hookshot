@@ -284,8 +284,8 @@ bool screen_size(uint32_t* w, uint32_t* h) {
 #endif
     return false;
 }
-// The output the menu's sizes are shown for: the Output resolution row's (applied at the next start), so the rows below follow a change
-// at once; the Handheld profile runs the game's own (1536x864)
+// The output the menu's sizes are shown for: the Output resolution row's, so the rows below follow a change at once (one tagged
+// After restart shows them as they will be after it); the Handheld profile runs the game's own (1536x864)
 struct Out {
     uint32_t w, h;
 };
@@ -300,6 +300,12 @@ Out output_at(int v) {
     v = output_choice(v);
     return v == kCustomOutput ? custom_output : kOutputs[v];
 }
+/// A choice's size as host/nn_applet.c takes it (vk_api.h HOS_OPT_OUTPUT_RES)
+int output_value(int v) {
+    const Out o = output_at(v);
+    return (int)(o.w << HOS_OUTPUT_WIDTH_SHIFT | o.h);
+}
+std::atomic<int> output_running{-1};   // (the Output resolution the running game has, as output_value; -1 not told yet)
 /// output_res= (or HOS_OUTPUT_RES) to a choice: "<width>x<height>" (each side a multiple of 8, rounded down; at least 640 x 360,
 /// at most 5120 x 2880's pixels, 5:4 to 48:9), one of the sizes offered or the player's own (custom_output); the numbers saved
 /// before (0 to 5) as theirs; anything else the game's own (host/nn_applet.c hos_output_parse: the same rules)
@@ -784,7 +790,8 @@ Row rows[] = {
      "AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_antilag},
     // (the picture's way, top to bottom: the output's size, what fills it from the 3D, the 3D's size, then the window)
     {TAB_GRAPHICS, "Output resolution", &opts.output_res, 0, kLastOutput, 1, tx_output_res,
-     "The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.",
+     "The game's whole frame, HUD included, before it is scaled to the window. Docked only. A size the running game cannot take "
+     "applies after a restart.",
      hn_output_res, true},
     {TAB_GRAPHICS, "Upscaler", &opts.dlss, 0, ur::kUpscalers - 1, 1, tx_upscaler, "What scales the 3D up to the Output resolution.",
      hn_upscaler},
@@ -800,7 +807,7 @@ Row rows[] = {
      "Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a "
      "little GPU time. Game's is the console's own (1x or 2x).", nullptr},
     {TAB_GRAPHICS, "Profile", &opts.handheld, 0, 1, 1, tx_profile,
-     "Runs the game as the console docked or handheld. Applies after a restart.", hn_handheld, true},
+     "Runs the game as the console docked or handheld.", hn_handheld},
     {TAB_GRAPHICS, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
     {TAB_GRAPHICS, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
@@ -1146,14 +1153,18 @@ void restart_init() {
     }
 }
 int restart_slot_of(const Row& r) { return restart_slot[&r - rows]; }
+/// An Output resolution the running game has taken (host/nn_applet.c says which): no restart
+bool applied_live(const Row& r) {
+    return r.value == &opts.output_res && output_running.load(std::memory_order_relaxed) == output_value(*r.value);
+}
 /// A row that takes a restart, changed from what the game started with (a row past menu_restart.h's kMax has no slot: never)
 bool restart_changed(const Row& r) {
     const int slot = restart_slot_of(r);
-    return r.value && r.restart && slot >= 0 && *r.value != restart_state.start[slot];
+    return r.value && r.restart && slot >= 0 && *r.value != restart_state.start[slot] && !applied_live(r);
 }
 void restart_values(int* now) {
     for (int i = 0; i < kRows; i++)
-        if (restart_slot[i] >= 0) now[restart_slot[i]] = *rows[i].value;
+        if (restart_slot[i] >= 0) now[restart_slot[i]] = applied_live(rows[i]) ? restart_state.start[restart_slot[i]] : *rows[i].value;
 }
 /// The rows whose value is not the one the game runs with (a bit a slot)
 unsigned restart_pending() {
@@ -1226,7 +1237,7 @@ std::string ini_path() {
     return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_options.ini";
 }
 const char* ini_key(const Row& r) {
-    if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start)
+    if (r.value == &opts.output_res) return "output_res";   // (host/nn_applet.c reads it at the start, then the menu's)
     if (r.value == &opts.vsync) return "vsync";
     // (rows renamed since their values were first saved keep their keys: an options file from before still loads)
     if (r.value == &opts.resolution) return "resolution";
@@ -2794,6 +2805,7 @@ int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_o
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
+int menu_output() { return output_value(opts.output_res); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
@@ -2858,6 +2870,10 @@ void menu_option_set(int id, int value) {
             int expected = value ? 0 : 1;
             player_flight.compare_exchange_strong(expected, value != 0, std::memory_order_relaxed);
         }
+        return;
+    }
+    if (id == HOS_OPT_OUTPUT_RUNNING) {   // (host/nn_applet.c: the Output resolution the running game has)
+        if (output_running.exchange(value, std::memory_order_relaxed) != value) menu_refresh = true;
         return;
     }
     if (id != 7) return;
