@@ -65,6 +65,7 @@ struct DeviceFacts {
     }
     bool robust_buffers = false;  // (robustBufferAccess and robustBufferAccess2 given: the Robust buffers row, robust_choice.h)
     bool robust_offered = false;  // (the GPU offers both, whatever the row asks for)
+    int mesh_mode = 0;            // (the Mesh shaders row's choice the device was made with, mesh_choice.h)
     bool swap_mutable = false;   // (VK_KHR_swapchain_mutable_format: an sRGB swapchain's images viewed as UNORM)
     VkPhysicalDeviceVulkan12Features vk12{};
     VkPhysicalDeviceVulkan13Features vk13{};

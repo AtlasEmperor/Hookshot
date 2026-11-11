@@ -30,6 +30,7 @@
 #include "vk_paths.h"
 #include "vk_menu.h"
 #include "vk_device_life.h"
+#include "mesh_choice.h"
 #include "robust_choice.h"
 #include "rows_script.h"
 #include "vk_menu_hit.h"
@@ -458,9 +459,9 @@ const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
 }
-// (the GPU device and Robust buffers rows the device in use was made with: what the ini keeps, a row taking effect when the
-// device is made again with it, device_tick. -1: no device yet)
-int gpu_device_in_effect = -1, robust_in_effect = -1;
+// (the GPU device, Robust buffers and Mesh shaders rows the device in use was made with: what the ini keeps, a row taking effect
+// when the device is made again with it, device_tick. -1: no device yet)
+int gpu_device_in_effect = -1, robust_in_effect = -1, mesh_in_effect = -1;
 const char* tx_gpu(int v) {
     static char buf[300];
     const int idx = v - 1;
@@ -711,9 +712,19 @@ const char* hn_robust(int v, int variant) {
     if (variant == 1) return "the robust buffers asked for failed to set up: the device before was set up again";   // (the longest)
     return hint_in(t, 3, 0, v, variant - 2);
 }
-MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not.",
-           "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
-           "The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.")
+/// Mesh shaders: why the row went back, when the last change of it could not be made (the device in use stays)
+const char* hn_mesh_mode(int v, int variant) {
+    static const char* const t[] = {"The GPU's own mesh shaders where it has them, the compute path where it has not.",
+                                    "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
+                                    ("The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a "
+                                     "little slower.")};
+    if (variant < 0) {
+        const DeviceRebuildOutcome o = device_rebuild_outcome();
+        return o.seq && !o.ok && o.change == device_change::Change::MeshShaders ? o.text : hint_in(t, 3, 0, v, 0);
+    }
+    if (variant == 0) return "the mesh shaders asked for failed to set up: the device before was set up again";   // (the longest)
+    return hint_in(t, 3, 0, v, variant - 1);
+}
 MENU_HINTS(hn_fps, 0, nullptr, "With frame generation on, the game's own rate too.")
 MENU_HINTS(hn_menu_size, 1, "Smaller, for a desk.", "The usual size.", "Larger, for a TV across the room.")
 MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs below 60 fps.",
@@ -800,7 +811,7 @@ Row rows[] = {
      "Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU.", hn_robust},
     {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
      "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
-     "every GPU has. Applies after a restart.", hn_mesh_mode, true},
+     "every GPU has.", hn_mesh_mode},
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
@@ -1199,7 +1210,7 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
-    if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
+    if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp takes it as the device is made)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -1245,11 +1256,12 @@ int detect_pad_layout() {
     if (a == HOS_PAD_SOUTH && b == HOS_PAD_EAST && x == HOS_PAD_NORTH && y == HOS_PAD_WEST) return 2;
     return 3;
 }
-/// A row's value as the ini keeps it: the GPU device and Robust buffers rows as the device in use was made with them (a choice
-/// that failed is never saved, and is not tried again at the next start)
+/// A row's value as the ini keeps it: the GPU device, Robust buffers and Mesh shaders rows as the device in use was made with
+/// them (a choice that failed is never saved, and is not tried again at the next start)
 int saved_value(const Row& r) {
     if (r.value == &opts.gpu_device && gpu_device_in_effect >= 0) return gpu_device_in_effect;
     if (r.value == &opts.robust && robust_in_effect >= 0) return robust_in_effect;
+    if (r.value == &opts.mesh_mode && mesh_in_effect >= 0) return mesh_in_effect;
     return *r.value;
 }
 // (hookshot) the row's choice to the host: off, the default, or a microphone by its name (and its place in the host's list,
@@ -2732,7 +2744,8 @@ void menu_set_gpu_count(int count) {
         }
     }
     restart_init();
-    if (gpu_device_in_effect < 0) gpu_device_in_effect = opts.gpu_device, robust_in_effect = opts.robust;   // (the first device's)
+    if (gpu_device_in_effect < 0)   // (the first device's)
+        gpu_device_in_effect = opts.gpu_device, robust_in_effect = opts.robust, mesh_in_effect = opts.mesh_mode;
 }
 
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
@@ -2936,25 +2949,27 @@ void rows_script_tick() {
              *row->value == want ? "" : " (the value asked for is not offered here)");
     }
 }
-// The GPU device and Robust buffers rows take effect when the device is made again (vk_device_rebuild.cpp, on its own thread):
-// asked for at each change of the rows, so that the rebuild waits until they rest, and once the start-up screen is gone (its
-// shader workers use the device outside the gate); kept in the ini once taken, put back where they were when it failed
+// The GPU device, Robust buffers and Mesh shaders rows take effect when the device is made again (vk_device_rebuild.cpp, on its
+// own thread): asked for at each change of the rows, so that the rebuild waits until they rest, and once the start-up screen is
+// gone (its shader workers use the device outside the gate); kept in the ini once taken, put back where they were when it failed
 void device_tick() {
-    static int asked_gpu = -1, asked_robust = -1;   // (the rows of the request pending; -1: none)
+    static int asked_gpu = -1, asked_robust = -1, asked_mesh = -1;   // (the rows of the request pending; -1: none)
     static uint64_t seen = 0;
     if (gpu_device_in_effect < 0) return;
     if (const DeviceRebuildOutcome o = device_rebuild_outcome(); o.seq != seen) {
-        seen = o.seq, asked_gpu = asked_robust = -1;
-        gpu_device_in_effect = o.gpu_row, robust_in_effect = o.robust_row;
-        if (!o.ok) opts.gpu_device = o.gpu_row, opts.robust = o.robust_row;
+        seen = o.seq, asked_gpu = asked_robust = asked_mesh = -1;
+        gpu_device_in_effect = o.gpu_row, robust_in_effect = o.robust_row, mesh_in_effect = o.mesh_row;
+        if (!o.ok) opts.gpu_device = o.gpu_row, opts.robust = o.robust_row, opts.mesh_mode = o.mesh_row;
         menu_refresh = true;
         save();
     }
-    const bool other = opts.gpu_device != gpu_device_in_effect || opts.robust != robust_in_effect;
-    if (!other) asked_gpu = asked_robust = -1;   // (back to the device in use: a later change asks again)
-    if (other && !startup_on.load(std::memory_order_acquire) && (opts.gpu_device != asked_gpu || opts.robust != asked_robust)) {
-        asked_gpu = opts.gpu_device, asked_robust = opts.robust;
-        device_rebuild_request(gpu_device_in_effect, robust_in_effect);
+    const bool other =
+        opts.gpu_device != gpu_device_in_effect || opts.robust != robust_in_effect || opts.mesh_mode != mesh_in_effect;
+    if (!other) asked_gpu = asked_robust = asked_mesh = -1;   // (back to the device in use: a later change asks again)
+    if (other && !startup_on.load(std::memory_order_acquire) &&
+        (opts.gpu_device != asked_gpu || opts.robust != asked_robust || opts.mesh_mode != asked_mesh)) {
+        asked_gpu = opts.gpu_device, asked_robust = opts.robust, asked_mesh = opts.mesh_mode;
+        device_rebuild_request(gpu_device_in_effect, robust_in_effect, mesh_in_effect);
     }
 }
 void menu_tick() {
